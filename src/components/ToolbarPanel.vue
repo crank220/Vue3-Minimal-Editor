@@ -14,6 +14,11 @@ const verticalAlignments = [
   { label: 'Center', value: 'center' },
   { label: 'Bottom', value: 'flex-end' },
 ]
+const strokePositions = [
+  { label: 'Inside', value: 'inside' },
+  { label: 'Center', value: 'center' },
+  { label: 'Outside', value: 'outside' },
+]
 const lineHeightPresets = [1, 1.2, 1.5, 1.8, 2, 2.4]
 
 const backgroundValue = computed({
@@ -99,6 +104,15 @@ function clampLineHeight(value) {
       <label>
         Stroke width
         <input v-model.number="styleState.strokeWidth" type="number" min="0" max="12" />
+      </label>
+
+      <label>
+        Stroke align
+        <select v-model="styleState.strokePosition">
+          <option v-for="item in strokePositions" :key="item.value" :value="item.value">
+            {{ item.label }}
+          </option>
+        </select>
       </label>
 
       <label>

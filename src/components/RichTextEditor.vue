@@ -30,6 +30,7 @@ function applyStyleToSelection() {
 
   clearSelectionPreview()
   Object.assign(span.style, styleToCss(styleState))
+  applyStrokeMeta(span)
 
   if (!targetSpan) {
     const content = range.extractContents()
@@ -73,6 +74,7 @@ function syncToolbarFromSelection() {
   }
 
   const computedStyle = window.getComputedStyle(target)
+  const strokeMeta = getStrokeMeta(target)
 
   patchStyleState({
     fontSize: Math.round(parsePixelValue(computedStyle.fontSize, DEFAULT_STYLE_STATE.fontSize)),
@@ -90,14 +92,9 @@ function syncToolbarFromSelection() {
       computedStyle.fontSize,
       DEFAULT_STYLE_STATE.lineHeight,
     ),
-    strokeColor: parseColorValue(
-      computedStyle.getPropertyValue('-webkit-text-stroke-color'),
-      DEFAULT_STYLE_STATE.strokeColor,
-    ),
-    strokeWidth: parsePixelValue(
-      computedStyle.getPropertyValue('-webkit-text-stroke-width'),
-      DEFAULT_STYLE_STATE.strokeWidth,
-    ),
+    strokeColor: strokeMeta.strokeColor,
+    strokeWidth: strokeMeta.strokeWidth,
+    strokePosition: strokeMeta.strokePosition,
   })
 }
 
@@ -186,6 +183,46 @@ function setSelectionPreview(element) {
   }
 
   element.setAttribute('data-selection-preview', 'true')
+}
+
+function applyStrokeMeta(element) {
+  if (!element) {
+    return
+  }
+
+  if (styleState.strokeWidth > 0) {
+    element.dataset.strokeColor = styleState.strokeColor
+    element.dataset.strokeWidth = String(styleState.strokeWidth)
+    element.dataset.strokePosition = styleState.strokePosition
+    return
+  }
+
+  delete element.dataset.strokeColor
+  delete element.dataset.strokeWidth
+  delete element.dataset.strokePosition
+}
+
+function getStrokeMeta(target) {
+  const span = target?.closest?.('span') ?? (target?.tagName === 'SPAN' ? target : null)
+  if (!span?.dataset.strokeWidth) {
+    return {
+      strokeColor: parseColorValue(
+        window.getComputedStyle(target).getPropertyValue('-webkit-text-stroke-color'),
+        DEFAULT_STYLE_STATE.strokeColor,
+      ),
+      strokeWidth: parsePixelValue(
+        window.getComputedStyle(target).getPropertyValue('-webkit-text-stroke-width'),
+        DEFAULT_STYLE_STATE.strokeWidth,
+      ),
+      strokePosition: DEFAULT_STYLE_STATE.strokePosition,
+    }
+  }
+
+  return {
+    strokeColor: span.dataset.strokeColor ?? DEFAULT_STYLE_STATE.strokeColor,
+    strokeWidth: parsePixelValue(span.dataset.strokeWidth, DEFAULT_STYLE_STATE.strokeWidth),
+    strokePosition: span.dataset.strokePosition ?? DEFAULT_STYLE_STATE.strokePosition,
+  }
 }
 
 function parsePixelValue(value, fallback) {
