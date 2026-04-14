@@ -81,6 +81,7 @@ export const DEFAULT_EDITOR_BOX_STATE = {
 
 export const DEFAULT_PREVIEW_STATE = {
   format: 'multiline',
+  pageTransitionDirection: 'static',
   pageTransitionMs: 100,
   pageStaySeconds: 10,
   singleLineMode: 'static',

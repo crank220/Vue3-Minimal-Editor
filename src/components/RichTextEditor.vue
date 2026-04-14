@@ -21,6 +21,11 @@ const previewSource = ref({
   html: '',
   singleLineHtml: '',
 })
+const editorScrollState = ref({
+  clientHeight: 0,
+  scrollHeight: 0,
+  scrollTop: 0,
+})
 
 const editorStyle = computed(() => ({
   textAlign: styleState.textAlign,
@@ -45,11 +50,36 @@ const editorBoxStyle = computed(() => ({
   paddingLeft: `${editorBoxMetrics.value.paddingLeft}px`,
 }))
 
+const hasEditorScroll = computed(
+  () => editorScrollState.value.scrollHeight > editorScrollState.value.clientHeight + 1,
+)
+
+const editorScrollThumbStyle = computed(() => {
+  const { clientHeight, scrollHeight, scrollTop } = editorScrollState.value
+  if (!hasEditorScroll.value || clientHeight <= 0 || scrollHeight <= 0) {
+    return {
+      height: '0px',
+      transform: 'translateY(0px)',
+    }
+  }
+
+  const thumbHeight = Math.max(28, (clientHeight / scrollHeight) * clientHeight)
+  const maxThumbTop = Math.max(0, clientHeight - thumbHeight)
+  const maxScrollTop = Math.max(1, scrollHeight - clientHeight)
+  const thumbTop = (scrollTop / maxScrollTop) * maxThumbTop
+
+  return {
+    height: `${thumbHeight}px`,
+    transform: `translateY(${thumbTop}px)`,
+  }
+})
+
 function saveSelection() {
   clearSelectionPreview()
   saveRange(editorRef.value)
   syncToolbarFromSelection()
   syncPreviewSource()
+  syncEditorScrollState()
 }
 
 function applyStyleToSelection() {
@@ -82,6 +112,7 @@ function applyStyleToSelection() {
       normalize(editorRef.value)
       syncToolbarFromSelection()
       syncPreviewSource()
+      syncEditorScrollState()
     }
   })
 }
@@ -93,6 +124,7 @@ function onInput() {
       saveRange(editorRef.value)
       syncToolbarFromSelection()
       syncPreviewSource()
+      syncEditorScrollState()
     }
   })
 }
@@ -347,6 +379,18 @@ function sanitizePreviewHtml(value) {
     .replace(/\sdata-selection-preview='true'/g, '')
 }
 
+function syncEditorScrollState() {
+  if (!editorRef.value) {
+    return
+  }
+
+  editorScrollState.value = {
+    clientHeight: editorRef.value.clientHeight,
+    scrollHeight: editorRef.value.scrollHeight,
+    scrollTop: editorRef.value.scrollTop,
+  }
+}
+
 function normalizeDimension(value, fallback) {
   const number = Number.parseFloat(value)
   if (!Number.isFinite(number)) {
@@ -367,6 +411,7 @@ function normalizeSpacing(value, fallback) {
 
 onMounted(() => {
   syncPreviewSource()
+  syncEditorScrollState()
 })
 
 watch(
@@ -380,6 +425,16 @@ watch(
       9,
       Math.max(1, Number.parseInt(previewState.singleLineSpeed, 10) || DEFAULT_PREVIEW_STATE.singleLineSpeed),
     )
+  },
+  { deep: true },
+)
+
+watch(
+  editorBoxMetrics,
+  () => {
+    nextTick(() => {
+      syncEditorScrollState()
+    })
   },
   { deep: true },
 )
@@ -413,19 +468,26 @@ watch(
       <ToolbarPanel />
 
       <div class="editor-stage" :style="editorStyle">
-        <div
-          ref="editorRef"
-          class="editor"
-          :style="editorBoxStyle"
-          contenteditable="true"
-          spellcheck="false"
-          @mouseup="saveSelection"
-          @keyup="saveSelection"
-          @focus="saveSelection"
-          @input="onInput"
-        >
-          Select this text first, then change the toolbar settings to apply font size,
-          colors, stroke, letter spacing, and line height instantly.
+        <div class="editor-panel" :style="{ width: editorBoxStyle.width, height: editorBoxStyle.height }">
+          <div
+            ref="editorRef"
+            class="editor"
+            :style="editorBoxStyle"
+            contenteditable="true"
+            spellcheck="false"
+            @mouseup="saveSelection"
+            @keyup="saveSelection"
+            @focus="saveSelection"
+            @input="onInput"
+            @scroll="syncEditorScrollState"
+          >
+            Select this text first, then change the toolbar settings to apply font size,
+            colors, stroke, letter spacing, and line height instantly.
+          </div>
+
+          <div v-if="hasEditorScroll" class="editor-scrollbar">
+            <div class="editor-scrollbar-thumb" :style="editorScrollThumbStyle" />
+          </div>
         </div>
       </div>
 
@@ -435,6 +497,7 @@ watch(
         :single-line-html="previewSource.singleLineHtml"
         :preview-config="previewState"
         :text-align="styleState.textAlign"
+        :vertical-align="styleState.verticalAlign"
       />
     </section>
   </main>
@@ -507,9 +570,11 @@ code {
   justify-content: center;
 }
 
+.editor-panel {
+  position: relative;
+}
+
 .editor {
-  width: 960px;
-  height: 540px;
   overflow: auto;
   padding: 20px 24px;
   border-radius: 20px;
@@ -529,27 +594,32 @@ code {
   height: 0;
 }
 
-.editor:hover {
-  scrollbar-width: thin;
-}
-
-.editor:hover::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-
-.editor:hover::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: rgba(24, 33, 47, 0.28);
-}
-
-.editor:hover::-webkit-scrollbar-track {
-  background: transparent;
-}
-
 .editor :deep([data-selection-preview='true']) {
   border-radius: 4px;
   box-shadow: inset 0 -1.1em rgba(54, 107, 255, 0.2);
+}
+
+.editor-scrollbar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+  width: 8px;
+  border-radius: 999px;
+  background: transparent;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.editor-panel:hover .editor-scrollbar {
+  opacity: 1;
+}
+
+.editor-scrollbar-thumb {
+  width: 100%;
+  border-radius: 999px;
+  background: rgba(24, 33, 47, 0.28);
 }
 
 .editor:focus {

@@ -23,6 +23,13 @@ const previewFormats = [
   { label: 'Multiline', value: 'multiline' },
   { label: 'Single line', value: 'singleline' },
 ]
+const pageTransitionDirections = [
+  { label: 'Static', value: 'static' },
+  { label: 'Move left', value: 'left' },
+  { label: 'Move right', value: 'right' },
+  { label: 'Move up', value: 'up' },
+  { label: 'Move down', value: 'down' },
+]
 const pageTransitionOptions = [
   { label: '100ms', value: 100 },
   { label: '200ms', value: 200 },
@@ -246,6 +253,19 @@ function clampLineHeight(value) {
       </label>
 
       <template v-if="previewState.format === 'multiline'">
+        <label>
+          Page motion
+          <select v-model="previewState.pageTransitionDirection">
+            <option
+              v-for="item in pageTransitionDirections"
+              :key="item.value"
+              :value="item.value"
+            >
+              {{ item.label }}
+            </option>
+          </select>
+        </label>
+
         <label>
           Page transition
           <select v-model.number="previewState.pageTransitionMs">

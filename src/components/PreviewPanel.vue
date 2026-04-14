@@ -22,17 +22,35 @@ const props = defineProps({
     type: String,
     default: 'left',
   },
+  verticalAlign: {
+    type: String,
+    default: 'center',
+  },
 })
 
-const multilineFlowRef = ref(null)
+const multilineMeasureRef = ref(null)
 const singleMeasureRef = ref(null)
+
+const pagesHtml = ref(['&nbsp;'])
 const currentPage = ref(0)
-const totalPageCount = ref(1)
+const hasTruncatedPages = ref(false)
+
 const singleOffset = ref(0)
 const singleRawWidth = ref(0)
 
+const transitionState = ref({
+  active: false,
+  phase: 'idle',
+  from: 0,
+  to: 0,
+  direction: 'static',
+})
+
 let pageTimerId = 0
+let transitionTimerId = 0
 let animationFrameId = 0
+
+const normalizedVerticalAlign = computed(() => normalizeVerticalAlign(props.verticalAlign))
 
 const previewPageStyle = computed(() => ({
   width: `${props.boxMetrics.width}px`,
@@ -44,24 +62,44 @@ const previewPageStyle = computed(() => ({
   textAlign: props.textAlign,
 }))
 
-const multilineContentWidth = computed(() =>
-  Math.max(1, props.boxMetrics.width - props.boxMetrics.paddingLeft - props.boxMetrics.paddingRight),
-)
-
-const multilineFlowStyle = computed(() => ({
+const singleLineViewportStyle = computed(() => ({
   ...previewPageStyle.value,
-  columnWidth: `${multilineContentWidth.value}px`,
-  columnGap: '0px',
-  transform: `translateX(-${currentPage.value * props.boxMetrics.width}px)`,
-  transitionDuration: `${props.previewConfig.pageTransitionMs}ms`,
+  alignItems: normalizedVerticalAlign.value,
 }))
-
-const visiblePageCount = computed(() => Math.min(totalPageCount.value, 10))
-const droppedPageCount = computed(() => Math.max(0, totalPageCount.value - 10))
-const multilinePageText = computed(() => `${Math.min(currentPage.value + 1, visiblePageCount.value)} / ${visiblePageCount.value}`)
 
 const safeContentHtml = computed(() => props.contentHtml || '&nbsp;')
 const safeSingleLineHtml = computed(() => props.singleLineHtml || '&nbsp;')
+
+const visiblePageCount = computed(() => pagesHtml.value.length)
+const multilinePageText = computed(() => `${Math.min(currentPage.value + 1, visiblePageCount.value)} / ${visiblePageCount.value}`)
+
+const activeMultilinePages = computed(() => {
+  if (!transitionState.value.active) {
+    return [
+      {
+        key: `page-${currentPage.value}`,
+        html: pagesHtml.value[currentPage.value] ?? '&nbsp;',
+        layerStyle: getTransitionLayerStyle('idle'),
+        contentStyle: getMultilineContentStyle(currentPage.value),
+      },
+    ]
+  }
+
+  return [
+    {
+      key: `from-${transitionState.value.from}-${transitionState.value.phase}`,
+      html: pagesHtml.value[transitionState.value.from] ?? '&nbsp;',
+      layerStyle: getTransitionLayerStyle('from'),
+      contentStyle: getMultilineContentStyle(transitionState.value.from),
+    },
+    {
+      key: `to-${transitionState.value.to}-${transitionState.value.phase}`,
+      html: pagesHtml.value[transitionState.value.to] ?? '&nbsp;',
+      layerStyle: getTransitionLayerStyle('to'),
+      contentStyle: getMultilineContentStyle(transitionState.value.to),
+    },
+  ]
+})
 
 const singleEffectiveWidth = computed(() => Math.min(singleRawWidth.value, 65536))
 const singleSliceCount = computed(() => Math.max(1, Math.ceil(singleEffectiveWidth.value / 8096)))
@@ -103,6 +141,7 @@ watch(
     props.boxMetrics.paddingBottom,
     props.boxMetrics.paddingLeft,
     props.previewConfig.format,
+    props.previewConfig.pageTransitionDirection,
     props.previewConfig.pageTransitionMs,
     props.previewConfig.pageStaySeconds,
     props.previewConfig.singleLineMode,
@@ -112,10 +151,12 @@ watch(
   async () => {
     currentPage.value = 0
     singleOffset.value = 0
+    resetTransitionState()
 
     await nextTick()
-    measureMultilinePages()
+    paginateMultilineContent()
     measureSingleLineWidth()
+    restartMultilineAutoplay()
     restartSingleLineAnimation()
   },
   { immediate: true },
@@ -123,24 +164,356 @@ watch(
 
 onBeforeUnmount(() => {
   stopMultilineAutoplay()
+  stopPageTransition()
   stopSingleLineAnimation()
 })
 
-function measureMultilinePages() {
-  if (!multilineFlowRef.value) {
-    totalPageCount.value = 1
+function paginateMultilineContent() {
+  if (!multilineMeasureRef.value) {
+    pagesHtml.value = ['&nbsp;']
+    hasTruncatedPages.value = false
     return
   }
 
-  const pageWidth = multilineFlowRef.value.clientWidth || props.boxMetrics.width
-  const scrollWidth = multilineFlowRef.value.scrollWidth || pageWidth
-  totalPageCount.value = Math.max(1, Math.ceil(scrollWidth / pageWidth))
+  const tokens = tokenizeHtml(safeContentHtml.value)
+  const pages = []
+  let currentTokens = []
+  hasTruncatedPages.value = false
 
-  if (currentPage.value >= visiblePageCount.value) {
-    currentPage.value = 0
+  if (tokens.length === 0) {
+    pagesHtml.value = ['&nbsp;']
+    return
   }
 
-  restartMultilineAutoplay()
+  for (let index = 0; index < tokens.length; index += 1) {
+    currentTokens.push(tokens[index])
+    multilineMeasureRef.value.innerHTML = renderTokens(currentTokens)
+
+    if (isMeasureOverflowing(multilineMeasureRef.value)) {
+      const overflowToken = currentTokens.pop()
+      multilineMeasureRef.value.innerHTML = renderTokens(currentTokens)
+      pages.push(multilineMeasureRef.value.innerHTML || '&nbsp;')
+
+      if (pages.length >= 10) {
+        hasTruncatedPages.value = true
+        break
+      }
+
+      currentTokens = overflowToken ? [overflowToken] : []
+      multilineMeasureRef.value.innerHTML = renderTokens(currentTokens)
+
+      if (currentTokens.length && isMeasureOverflowing(multilineMeasureRef.value)) {
+        pages.push(multilineMeasureRef.value.innerHTML || '&nbsp;')
+        currentTokens = []
+
+        if (pages.length >= 10 && index < tokens.length - 1) {
+          hasTruncatedPages.value = true
+          break
+        }
+      }
+    }
+
+    if (pages.length >= 10 && index < tokens.length - 1) {
+      hasTruncatedPages.value = true
+      break
+    }
+  }
+
+  if (!hasTruncatedPages.value && currentTokens.length && pages.length < 10) {
+    pages.push(renderTokens(currentTokens) || '&nbsp;')
+  }
+
+  pagesHtml.value = pages.length ? pages : ['&nbsp;']
+
+  if (currentPage.value >= pagesHtml.value.length) {
+    currentPage.value = 0
+  }
+}
+
+function tokenizeHtml(html) {
+  const container = document.createElement('div')
+  container.innerHTML = html
+
+  const tokens = []
+  walkNodes(container, '', tokens)
+  return tokens
+}
+
+function walkNodes(node, inheritedStyle, tokens) {
+  node.childNodes.forEach((child) => {
+    if (child.nodeType === Node.TEXT_NODE) {
+      Array.from(child.textContent ?? '').forEach((character) => {
+        tokens.push({
+          type: 'text',
+          value: character,
+          style: inheritedStyle,
+        })
+      })
+      return
+    }
+
+    if (child.nodeType !== Node.ELEMENT_NODE) {
+      return
+    }
+
+    if (child.tagName === 'BR') {
+      tokens.push({ type: 'br' })
+      return
+    }
+
+    const mergedStyle = mergeInlineStyles(inheritedStyle, child.getAttribute('style') ?? '')
+    walkNodes(child, mergedStyle, tokens)
+  })
+}
+
+function mergeInlineStyles(parentStyle, childStyle) {
+  const map = new Map()
+
+  serializeStyleEntries(parentStyle).forEach(([property, value]) => {
+    map.set(property, value)
+  })
+
+  serializeStyleEntries(childStyle).forEach(([property, value]) => {
+    map.set(property, value)
+  })
+
+  return [...map.entries()]
+    .map(([property, value]) => `${property}: ${value}`)
+    .join('; ')
+}
+
+function serializeStyleEntries(styleText) {
+  return String(styleText ?? '')
+    .split(';')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const separator = entry.indexOf(':')
+      if (separator === -1) {
+        return null
+      }
+
+      const property = entry.slice(0, separator).trim()
+      const value = entry.slice(separator + 1).trim()
+      return property && value ? [property, value] : null
+    })
+    .filter(Boolean)
+}
+
+function renderTokens(tokens) {
+  let html = ''
+  let buffer = ''
+  let currentStyle = null
+
+  tokens.forEach((token) => {
+    if (token.type === 'br') {
+      html += flushBufferedHtml(buffer, currentStyle)
+      buffer = ''
+      currentStyle = null
+      html += '<br>'
+      return
+    }
+
+    if (token.style !== currentStyle) {
+      html += flushBufferedHtml(buffer, currentStyle)
+      buffer = ''
+      currentStyle = token.style
+    }
+
+    buffer += escapeHtml(token.value)
+  })
+
+  html += flushBufferedHtml(buffer, currentStyle)
+
+  return html
+}
+
+function flushBufferedHtml(buffer, styleText) {
+  if (!buffer) {
+    return ''
+  }
+
+  if (!styleText) {
+    return buffer
+  }
+
+  return `<span style="${escapeAttribute(styleText)}">${buffer}</span>`
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+}
+
+function escapeAttribute(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+}
+
+function isMeasureOverflowing(element) {
+  return element.scrollHeight > element.clientHeight || element.scrollWidth > element.clientWidth
+}
+
+function restartMultilineAutoplay() {
+  stopMultilineAutoplay()
+
+  if (props.previewConfig.format !== 'multiline' || pagesHtml.value.length <= 1) {
+    return
+  }
+
+  scheduleNextMultilineTurn()
+}
+
+function stopMultilineAutoplay() {
+  if (!pageTimerId) {
+    return
+  }
+
+  window.clearTimeout(pageTimerId)
+  pageTimerId = 0
+}
+
+function goToPreviousPage() {
+  if (pagesHtml.value.length <= 1 || transitionState.value.active) {
+    return
+  }
+
+  goToPage((currentPage.value - 1 + pagesHtml.value.length) % pagesHtml.value.length)
+}
+
+function goToNextPage() {
+  if (pagesHtml.value.length <= 1 || transitionState.value.active) {
+    return
+  }
+
+  goToPage((currentPage.value + 1) % pagesHtml.value.length)
+}
+
+function goToPage(targetPage) {
+  if (targetPage === currentPage.value || transitionState.value.active) {
+    return
+  }
+
+  stopMultilineAutoplay()
+  stopPageTransition()
+
+  if (
+    props.previewConfig.pageTransitionDirection === 'static' ||
+    clampTransitionMs(props.previewConfig.pageTransitionMs) === 0
+  ) {
+    currentPage.value = targetPage
+    restartMultilineAutoplay()
+    return
+  }
+
+  transitionState.value = {
+    active: true,
+    phase: 'prepare',
+    from: currentPage.value,
+    to: targetPage,
+    direction: props.previewConfig.pageTransitionDirection,
+  }
+
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      transitionState.value = {
+        ...transitionState.value,
+        phase: 'running',
+      }
+    })
+  })
+
+  transitionTimerId = window.setTimeout(() => {
+    currentPage.value = targetPage
+    resetTransitionState()
+    restartMultilineAutoplay()
+  }, clampTransitionMs(props.previewConfig.pageTransitionMs))
+}
+
+function scheduleNextMultilineTurn() {
+  pageTimerId = window.setTimeout(() => {
+    pageTimerId = 0
+    goToPage((currentPage.value + 1) % pagesHtml.value.length)
+  }, clampPageStaySeconds(props.previewConfig.pageStaySeconds) * 1000)
+}
+
+function stopPageTransition() {
+  if (transitionTimerId) {
+    window.clearTimeout(transitionTimerId)
+    transitionTimerId = 0
+  }
+}
+
+function resetTransitionState() {
+  stopPageTransition()
+  transitionState.value = {
+    active: false,
+    phase: 'idle',
+    from: currentPage.value,
+    to: currentPage.value,
+    direction: 'static',
+  }
+}
+
+function getTransitionLayerStyle(layer) {
+  const base = {
+    ...previewPageStyle.value,
+    transition: 'none',
+  }
+
+  if (!transitionState.value.active || layer === 'idle') {
+    return {
+      ...base,
+      transform: 'translate3d(0, 0, 0)',
+      zIndex: 1,
+    }
+  }
+
+  const vector = getDirectionVector(transitionState.value.direction)
+
+  if (layer === 'from') {
+    return {
+      ...base,
+      transition: `transform ${clampTransitionMs(props.previewConfig.pageTransitionMs)}ms ease`,
+      transform:
+        transitionState.value.phase === 'running'
+          ? `translate3d(${vector.x}, ${vector.y}, 0)`
+          : 'translate3d(0, 0, 0)',
+      zIndex: 2,
+    }
+  }
+
+  return {
+    ...base,
+    transform: 'translate3d(0, 0, 0)',
+    zIndex: 1,
+  }
+}
+
+function getDirectionVector(direction) {
+  if (direction === 'up') {
+    return { x: '0%', y: '-100%' }
+  }
+
+  if (direction === 'down') {
+    return { x: '0%', y: '100%' }
+  }
+
+  if (direction === 'right') {
+    return { x: '100%', y: '0%' }
+  }
+
+  return { x: '-100%', y: '0%' }
+}
+
+function getMultilineContentStyle(pageIndex) {
+  return {
+    justifyContent:
+      pageIndex === pagesHtml.value.length - 1 ? normalizedVerticalAlign.value : 'flex-start',
+  }
 }
 
 function measureSingleLineWidth() {
@@ -150,29 +523,6 @@ function measureSingleLineWidth() {
   }
 
   singleRawWidth.value = Math.ceil(singleMeasureRef.value.scrollWidth)
-}
-
-function restartMultilineAutoplay() {
-  stopMultilineAutoplay()
-
-  if (props.previewConfig.format !== 'multiline' || visiblePageCount.value <= 1) {
-    return
-  }
-
-  const delay = clampPageStaySeconds(props.previewConfig.pageStaySeconds) * 1000 + props.previewConfig.pageTransitionMs
-
-  pageTimerId = window.setInterval(() => {
-    currentPage.value = (currentPage.value + 1) % visiblePageCount.value
-  }, delay)
-}
-
-function stopMultilineAutoplay() {
-  if (!pageTimerId) {
-    return
-  }
-
-  window.clearInterval(pageTimerId)
-  pageTimerId = 0
 }
 
 function restartSingleLineAnimation() {
@@ -218,24 +568,6 @@ function stopSingleLineAnimation() {
   animationFrameId = 0
 }
 
-function goToPreviousPage() {
-  if (visiblePageCount.value <= 1) {
-    return
-  }
-
-  currentPage.value = (currentPage.value - 1 + visiblePageCount.value) % visiblePageCount.value
-  restartMultilineAutoplay()
-}
-
-function goToNextPage() {
-  if (visiblePageCount.value <= 1) {
-    return
-  }
-
-  currentPage.value = (currentPage.value + 1) % visiblePageCount.value
-  restartMultilineAutoplay()
-}
-
 function clampPageStaySeconds(value) {
   const number = Number.parseInt(value, 10)
   if (!Number.isFinite(number)) {
@@ -245,6 +577,15 @@ function clampPageStaySeconds(value) {
   return Math.min(9999, Math.max(1, number))
 }
 
+function clampTransitionMs(value) {
+  const number = Number.parseInt(value, 10)
+  if (!Number.isFinite(number)) {
+    return 100
+  }
+
+  return Math.max(0, number)
+}
+
 function clampSingleLineSpeed(value) {
   const number = Number.parseInt(value, 10)
   if (!Number.isFinite(number)) {
@@ -252,6 +593,14 @@ function clampSingleLineSpeed(value) {
   }
 
   return Math.min(9, Math.max(1, number))
+}
+
+function normalizeVerticalAlign(value) {
+  if (value === 'flex-start' || value === 'center' || value === 'flex-end') {
+    return value
+  }
+
+  return 'center'
 }
 </script>
 
@@ -283,20 +632,43 @@ function clampSingleLineSpeed(value) {
         </div>
 
         <div class="toolbar-group info-group">
+          <span>Motion {{ previewConfig.pageTransitionDirection }}</span>
           <span>Transition {{ previewConfig.pageTransitionMs }}ms</span>
           <span>Stay {{ previewConfig.pageStaySeconds }}s</span>
         </div>
       </div>
 
-      <div class="preview-viewport" :style="{ width: `${boxMetrics.width}px`, height: `${boxMetrics.height}px` }">
-        <div ref="multilineFlowRef" class="preview-page preview-flow" :style="multilineFlowStyle" v-html="safeContentHtml" />
+      <div
+        class="preview-viewport preview-page-stack"
+        :style="{ width: `${boxMetrics.width}px`, height: `${boxMetrics.height}px` }"
+      >
+        <div
+          v-for="page in activeMultilinePages"
+          :key="page.key"
+          class="preview-page preview-page-layer"
+          :style="page.layerStyle"
+        >
+          <div class="preview-page-content" :style="page.contentStyle">
+            <div class="preview-page-copy" v-html="page.html" />
+          </div>
+        </div>
       </div>
 
+      <div
+        ref="multilineMeasureRef"
+        class="preview-page preview-page-measure"
+        :style="previewPageStyle"
+        aria-hidden="true"
+      />
+
       <p class="preview-note">
-        Each page matches `Editor width` and `Editor height`. Maximum 10 pages are available in preview.
+        Each page uses the current `Editor width`, `Editor height`, and all four padding values.
       </p>
-      <p v-if="droppedPageCount > 0" class="preview-warning">
-        Content exceeds 10 pages. The extra {{ droppedPageCount }} page{{ droppedPageCount > 1 ? 's are' : ' is' }} discarded automatically.
+      <p class="preview-note">
+        Maximum 10 pages are supported in multiline preview.
+      </p>
+      <p v-if="hasTruncatedPages" class="preview-warning">
+        Content exceeds 10 pages. Data after page 10 is discarded automatically.
       </p>
     </div>
 
@@ -304,7 +676,13 @@ function clampSingleLineSpeed(value) {
       <div class="preview-toolbar">
         <div class="toolbar-group">
           <span class="page-counter">
-            {{ previewConfig.singleLineMode === 'static' ? 'Static' : previewConfig.singleLineMode === 'left' ? 'Move left' : 'Move right' }}
+            {{
+              previewConfig.singleLineMode === 'static'
+                ? 'Static'
+                : previewConfig.singleLineMode === 'left'
+                  ? 'Move left'
+                  : 'Move right'
+            }}
           </span>
         </div>
 
@@ -314,9 +692,14 @@ function clampSingleLineSpeed(value) {
         </div>
       </div>
 
-      <div class="preview-viewport preview-singleline-viewport" :style="previewPageStyle">
+      <div class="preview-viewport preview-singleline-viewport" :style="singleLineViewportStyle">
         <div class="single-line-track" :style="singleTrackStyle">
-          <div v-for="copy in singleCopies" :key="copy" class="single-line-copy" v-html="safeSingleLineHtml" />
+          <div
+            v-for="copy in singleCopies"
+            :key="copy"
+            class="single-line-copy"
+            v-html="safeSingleLineHtml"
+          />
         </div>
         <div ref="singleMeasureRef" class="single-line-measure" v-html="safeSingleLineHtml" />
       </div>
@@ -401,7 +784,6 @@ h2 {
   border: 1px solid rgba(24, 33, 47, 0.08);
   background: white;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
-  margin: 0 auto;
 }
 
 .preview-page {
@@ -413,9 +795,38 @@ h2 {
   line-height: 1.5;
 }
 
-.preview-flow {
-  column-fill: auto;
-  overflow: visible;
+.preview-page-stack {
+  position: relative;
+}
+
+.preview-page-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: white;
+  will-change: transform;
+}
+
+.preview-page-content {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.preview-page-copy {
+  width: 100%;
+}
+
+.preview-page-measure {
+  position: absolute;
+  left: -99999px;
+  top: 0;
+  visibility: hidden;
+  overflow: hidden;
+  pointer-events: none;
 }
 
 .preview-singleline-viewport {
