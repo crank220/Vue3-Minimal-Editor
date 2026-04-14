@@ -31,9 +31,9 @@ const props = defineProps({
 const multilineMeasureRef = ref(null)
 const singleMeasureRef = ref(null)
 
-const pagesHtml = ref(['&nbsp;'])
 const currentPage = ref(0)
 const hasTruncatedPages = ref(false)
+const multilinePageCount = ref(1)
 const cutImagePreviews = ref([])
 const cutImageError = ref('')
 const isGeneratingCutImages = ref(false)
@@ -70,12 +70,28 @@ const BASE_RENDER_STYLE = {
 }
 
 const parsedTokenStyleCache = new Map()
+const computedCanvasStyleCache = new WeakMap()
 
 const normalizedVerticalAlign = computed(() => normalizeVerticalAlign(props.verticalAlign))
 
 const previewPageStyle = computed(() => ({
   width: `${props.boxMetrics.width}px`,
   height: `${props.boxMetrics.height}px`,
+}))
+
+const singleLineViewportStyle = computed(() => ({
+  ...previewPageStyle.value,
+  paddingTop: `${props.boxMetrics.paddingTop}px`,
+  paddingRight: `${props.boxMetrics.paddingRight}px`,
+  paddingBottom: `${props.boxMetrics.paddingBottom}px`,
+  paddingLeft: `${props.boxMetrics.paddingLeft}px`,
+  textAlign: props.textAlign,
+  alignItems: normalizedVerticalAlign.value,
+}))
+
+const multilineFlowStyle = computed(() => ({
+  width: `${props.boxMetrics.width}px`,
+  minHeight: `${props.boxMetrics.height}px`,
   paddingTop: `${props.boxMetrics.paddingTop}px`,
   paddingRight: `${props.boxMetrics.paddingRight}px`,
   paddingBottom: `${props.boxMetrics.paddingBottom}px`,
@@ -83,15 +99,10 @@ const previewPageStyle = computed(() => ({
   textAlign: props.textAlign,
 }))
 
-const singleLineViewportStyle = computed(() => ({
-  ...previewPageStyle.value,
-  alignItems: normalizedVerticalAlign.value,
-}))
-
 const safeContentHtml = computed(() => props.contentHtml || '&nbsp;')
 const safeSingleLineHtml = computed(() => props.singleLineHtml || '&nbsp;')
 
-const visiblePageCount = computed(() => pagesHtml.value.length)
+const visiblePageCount = computed(() => multilinePageCount.value)
 const multilinePageText = computed(() => `${Math.min(currentPage.value + 1, visiblePageCount.value)} / ${visiblePageCount.value}`)
 const effectiveCutImageWidth = computed(() =>
   clampCutImageWidth(props.previewConfig.cutImageWidth || props.boxMetrics.width),
@@ -102,9 +113,9 @@ const activeMultilinePages = computed(() => {
     return [
       {
         key: `page-${currentPage.value}`,
-        html: pagesHtml.value[currentPage.value] ?? '&nbsp;',
+        pageIndex: currentPage.value,
         layerStyle: getTransitionLayerStyle('idle'),
-        contentStyle: getMultilineContentStyle(currentPage.value),
+        flowStyle: getMultilineSliceStyle(currentPage.value),
       },
     ]
   }
@@ -112,15 +123,15 @@ const activeMultilinePages = computed(() => {
   return [
     {
       key: `from-${transitionState.value.from}-${transitionState.value.to}`,
-      html: pagesHtml.value[transitionState.value.from] ?? '&nbsp;',
+      pageIndex: transitionState.value.from,
       layerStyle: getTransitionLayerStyle('from'),
-      contentStyle: getMultilineContentStyle(transitionState.value.from),
+      flowStyle: getMultilineSliceStyle(transitionState.value.from),
     },
     {
       key: `to-${transitionState.value.from}-${transitionState.value.to}`,
-      html: pagesHtml.value[transitionState.value.to] ?? '&nbsp;',
+      pageIndex: transitionState.value.to,
       layerStyle: getTransitionLayerStyle('to'),
-      contentStyle: getMultilineContentStyle(transitionState.value.to),
+      flowStyle: getMultilineSliceStyle(transitionState.value.to),
     },
   ]
 })
@@ -201,62 +212,18 @@ defineExpose({
 
 function paginateMultilineContent() {
   if (!multilineMeasureRef.value) {
-    pagesHtml.value = ['&nbsp;']
+    multilinePageCount.value = 1
     hasTruncatedPages.value = false
     return
   }
 
-  const tokens = tokenizeHtml(safeContentHtml.value)
-  const pages = []
-  let currentTokens = []
-  hasTruncatedPages.value = false
+  const totalHeight = Math.max(props.boxMetrics.height, Math.ceil(multilineMeasureRef.value.scrollHeight))
+  const rawPageCount = Math.max(1, Math.ceil(totalHeight / Math.max(1, props.boxMetrics.height)))
 
-  if (tokens.length === 0) {
-    pagesHtml.value = ['&nbsp;']
-    return
-  }
+  multilinePageCount.value = Math.min(10, rawPageCount)
+  hasTruncatedPages.value = rawPageCount > 10
 
-  for (let index = 0; index < tokens.length; index += 1) {
-    currentTokens.push(tokens[index])
-    multilineMeasureRef.value.innerHTML = renderTokens(currentTokens)
-
-    if (isMeasureOverflowing(multilineMeasureRef.value)) {
-      const overflowToken = currentTokens.pop()
-      multilineMeasureRef.value.innerHTML = renderTokens(currentTokens)
-      pages.push(multilineMeasureRef.value.innerHTML || '&nbsp;')
-
-      if (pages.length >= 10) {
-        hasTruncatedPages.value = true
-        break
-      }
-
-      currentTokens = overflowToken ? [overflowToken] : []
-      multilineMeasureRef.value.innerHTML = renderTokens(currentTokens)
-
-      if (currentTokens.length && isMeasureOverflowing(multilineMeasureRef.value)) {
-        pages.push(multilineMeasureRef.value.innerHTML || '&nbsp;')
-        currentTokens = []
-
-        if (pages.length >= 10 && index < tokens.length - 1) {
-          hasTruncatedPages.value = true
-          break
-        }
-      }
-    }
-
-    if (pages.length >= 10 && index < tokens.length - 1) {
-      hasTruncatedPages.value = true
-      break
-    }
-  }
-
-  if (!hasTruncatedPages.value && currentTokens.length && pages.length < 10) {
-    pages.push(renderTokens(currentTokens) || '&nbsp;')
-  }
-
-  pagesHtml.value = pages.length ? pages : ['&nbsp;']
-
-  if (currentPage.value >= pagesHtml.value.length) {
+  if (currentPage.value >= multilinePageCount.value) {
     currentPage.value = 0
   }
 }
@@ -391,7 +358,7 @@ function isMeasureOverflowing(element) {
 function restartMultilineAutoplay() {
   stopMultilineAutoplay()
 
-  if (props.previewConfig.format !== 'multiline' || pagesHtml.value.length <= 1) {
+  if (props.previewConfig.format !== 'multiline' || multilinePageCount.value <= 1) {
     return
   }
 
@@ -408,19 +375,19 @@ function stopMultilineAutoplay() {
 }
 
 function goToPreviousPage() {
-  if (pagesHtml.value.length <= 1 || transitionState.value.active) {
+  if (multilinePageCount.value <= 1 || transitionState.value.active) {
     return
   }
 
-  goToPage((currentPage.value - 1 + pagesHtml.value.length) % pagesHtml.value.length)
+  goToPage((currentPage.value - 1 + multilinePageCount.value) % multilinePageCount.value)
 }
 
 function goToNextPage() {
-  if (pagesHtml.value.length <= 1 || transitionState.value.active) {
+  if (multilinePageCount.value <= 1 || transitionState.value.active) {
     return
   }
 
-  goToPage((currentPage.value + 1) % pagesHtml.value.length)
+  goToPage((currentPage.value + 1) % multilinePageCount.value)
 }
 
 function goToPage(targetPage) {
@@ -469,7 +436,7 @@ function goToPage(targetPage) {
 function scheduleNextMultilineTurn() {
   pageTimerId = window.setTimeout(() => {
     pageTimerId = 0
-    goToPage((currentPage.value + 1) % pagesHtml.value.length)
+    goToPage((currentPage.value + 1) % multilinePageCount.value)
   }, clampPageStaySeconds(props.previewConfig.pageStaySeconds) * 1000)
 }
 
@@ -542,10 +509,10 @@ function getDirectionVector(direction) {
   return { x: '-100%', y: '0%' }
 }
 
-function getMultilineContentStyle(pageIndex) {
+function getMultilineSliceStyle(pageIndex) {
   return {
-    justifyContent:
-      pageIndex === pagesHtml.value.length - 1 ? normalizedVerticalAlign.value : 'flex-start',
+    ...multilineFlowStyle.value,
+    transform: `translateY(-${pageIndex * props.boxMetrics.height}px)`,
   }
 }
 
@@ -574,34 +541,23 @@ async function generateCutImages() {
 }
 
 async function buildMultilineCutImages() {
+  if (!multilineMeasureRef.value) {
+    return []
+  }
+
+  const glyphs = collectMultilineGlyphs(multilineMeasureRef.value)
   const images = []
 
-  for (let index = 0; index < pagesHtml.value.length; index += 1) {
+  for (let index = 0; index < multilinePageCount.value; index += 1) {
     const width = props.boxMetrics.width
     const height = props.boxMetrics.height
-    const layout = buildTextLayout(pagesHtml.value[index] ?? '&nbsp;', {
-      maxWidth: Math.max(1, width - props.boxMetrics.paddingLeft - props.boxMetrics.paddingRight),
-      singleLine: false,
-    })
 
     images.push({
       id: `page-${index + 1}`,
       label: `Page ${index + 1}`,
       width,
       height,
-      url: renderCanvasToPng(
-        renderLayoutToCanvas({
-          width,
-          height,
-          layout,
-          paddingTop: props.boxMetrics.paddingTop,
-          paddingRight: props.boxMetrics.paddingRight,
-          paddingBottom: props.boxMetrics.paddingBottom,
-          paddingLeft: props.boxMetrics.paddingLeft,
-          textAlign: props.textAlign,
-          verticalAlign: index === pagesHtml.value.length - 1 ? normalizedVerticalAlign.value : 'flex-start',
-        }),
-      ),
+      url: renderCanvasToPng(renderMultilineSliceToCanvas(width, height, index, glyphs)),
     })
   }
 
@@ -683,6 +639,23 @@ function renderSingleLineSliceToCanvas({ width, height, sliceStart, totalWidth, 
   return canvas
 }
 
+function renderMultilineSliceToCanvas(width, height, pageIndex, glyphs) {
+  const canvas = createCanvas(width, height)
+  const context = getCanvasContext(canvas)
+  const pageTop = pageIndex * height
+  const pageBottom = pageTop + height
+
+  glyphs.forEach((glyph) => {
+    if (glyph.bottom <= pageTop || glyph.top >= pageBottom) {
+      return
+    }
+
+    drawResolvedGlyph(context, glyph, pageTop)
+  })
+
+  return canvas
+}
+
 function createCanvas(width, height) {
   const canvas = document.createElement('canvas')
   canvas.width = Math.max(1, Math.round(width))
@@ -707,6 +680,68 @@ function getCanvasContext(canvas) {
 
 function renderCanvasToPng(canvas) {
   return canvas.toDataURL('image/png')
+}
+
+function collectMultilineGlyphs(root) {
+  const rootRect = root.getBoundingClientRect()
+  const glyphs = []
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+
+  while (walker.nextNode()) {
+    const textNode = walker.currentNode
+    const parentElement = textNode.parentElement ?? root
+    const computedStyle = getComputedCanvasStyle(parentElement)
+    const text = textNode.textContent ?? ''
+
+    for (let index = 0; index < text.length; index += 1) {
+      const character = text[index]
+      if (character === '\n' || character === '\r') {
+        continue
+      }
+
+      const range = document.createRange()
+      range.setStart(textNode, index)
+      range.setEnd(textNode, index + 1)
+
+      const rectList = [...range.getClientRects()]
+      if (!rectList.length) {
+        const fallbackWidth = measureCharacter(character, computedStyle).width
+        const previousGlyph = glyphs[glyphs.length - 1]
+        const fallbackX = previousGlyph ? previousGlyph.x + previousGlyph.advance : 0
+        glyphs.push({
+          char: character,
+          style: computedStyle,
+          x: fallbackX,
+          width: fallbackWidth,
+          advance: fallbackWidth + computedStyle.letterSpacing,
+          top: previousGlyph ? previousGlyph.top : 0,
+          bottom: previousGlyph ? previousGlyph.bottom : computedStyle.lineHeightPx,
+          height: previousGlyph ? previousGlyph.height : computedStyle.lineHeightPx,
+        })
+        range.detach?.()
+        continue
+      }
+
+      rectList.forEach((rect) => {
+        const width = rect.width || measureCharacter(character, computedStyle).width
+
+        glyphs.push({
+          char: character,
+          style: computedStyle,
+          x: rect.left - rootRect.left,
+          width,
+          advance: width + computedStyle.letterSpacing,
+          top: rect.top - rootRect.top,
+          bottom: rect.bottom - rootRect.top,
+          height: rect.height || computedStyle.lineHeightPx,
+        })
+      })
+
+      range.detach?.()
+    }
+  }
+
+  return glyphs
 }
 
 function buildTextLayout(html, { maxWidth, singleLine }) {
@@ -799,6 +834,19 @@ function drawLine(context, line, startX, lineTop, clip = null) {
   }
 }
 
+function drawResolvedGlyph(context, glyph, pageTop) {
+  const y = glyph.top - pageTop
+  const baseline =
+    y + Math.max(0, (glyph.height - (glyph.style.ascent + glyph.style.descent)) / 2) + glyph.style.ascent
+
+  drawCharacter(context, {
+    char: glyph.char,
+    style: glyph.style,
+    width: glyph.width,
+    advance: glyph.advance,
+  }, glyph.x, baseline, y, glyph.height)
+}
+
 function drawCharacter(context, command, x, baseline, lineTop, lineHeight) {
   const { style, char, width, advance } = command
 
@@ -841,6 +889,32 @@ function getBaseRenderStyle() {
   return finalizeParsedTokenStyle({
     ...BASE_RENDER_STYLE,
   })
+}
+
+function getComputedCanvasStyle(element) {
+  const cached = computedCanvasStyleCache.get(element)
+  if (cached) {
+    return cached
+  }
+
+  const computed = window.getComputedStyle(element)
+  const style = finalizeParsedTokenStyle({
+    fontSize: parsePx(computed.fontSize, BASE_RENDER_STYLE.fontSize),
+    fontFamily: computed.fontFamily || BASE_RENDER_STYLE.fontFamily,
+    fontWeight: computed.fontWeight || BASE_RENDER_STYLE.fontWeight,
+    fontStyle: computed.fontStyle || BASE_RENDER_STYLE.fontStyle,
+    color: computed.color || BASE_RENDER_STYLE.color,
+    background: normalizeBackgroundColor(computed.backgroundColor),
+    letterSpacing: parsePx(computed.letterSpacing, BASE_RENDER_STYLE.letterSpacing),
+    lineHeightValue: parseLineHeightValue(computed.lineHeight, BASE_RENDER_STYLE.lineHeightValue),
+    textDecoration: computed.textDecorationLine || computed.textDecoration || BASE_RENDER_STYLE.textDecoration,
+    strokeWidth: parsePx(computed.getPropertyValue('-webkit-text-stroke-width'), 0),
+    strokeColor: computed.getPropertyValue('-webkit-text-stroke-color') || 'transparent',
+    textShadows: parseTextShadows(computed.textShadow),
+  })
+
+  computedCanvasStyleCache.set(element, style)
+  return style
 }
 
 function getParsedTokenStyle(styleText) {
@@ -1179,17 +1253,18 @@ function normalizeVerticalAlign(value) {
           class="preview-page preview-page-layer"
           :style="page.layerStyle"
         >
-          <div class="preview-page-content" :style="page.contentStyle">
-            <div class="preview-page-copy" v-html="page.html" />
+          <div class="preview-page-flow" :style="page.flowStyle">
+            <div class="preview-page-copy" v-html="safeContentHtml" />
           </div>
         </div>
       </div>
 
       <div
         ref="multilineMeasureRef"
-        class="preview-page preview-page-measure"
-        :style="previewPageStyle"
+        class="preview-page preview-flow-measure"
+        :style="multilineFlowStyle"
         aria-hidden="true"
+        v-html="safeContentHtml"
       />
 
       <p class="preview-note">
@@ -1372,30 +1447,31 @@ h2 {
 .preview-page-layer {
   position: absolute;
   inset: 0;
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
   background: white;
   will-change: transform;
 }
 
-.preview-page-content {
-  display: flex;
-  flex: 1 1 auto;
-  min-height: 0;
-  flex-direction: column;
+.preview-page-flow,
+.preview-flow-measure {
+  box-sizing: border-box;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 24px;
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  line-height: 1.5;
+  background: white;
 }
 
 .preview-page-copy {
   width: 100%;
 }
 
-.preview-page-measure {
+.preview-flow-measure {
   position: absolute;
   left: -99999px;
   top: 0;
   visibility: hidden;
-  overflow: hidden;
   pointer-events: none;
 }
 

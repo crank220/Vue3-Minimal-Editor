@@ -580,7 +580,6 @@ code {
     linear-gradient(rgba(229, 236, 246, 0.82), rgba(229, 236, 246, 0.82)),
     linear-gradient(90deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.95));
   display: flex;
-  justify-content: center;
 }
 
 .editor-panel {
