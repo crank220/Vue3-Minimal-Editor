@@ -1,8 +1,6 @@
 <script setup>
 import { styleState } from '../composables/useStyle'
 
-defineEmits(['apply'])
-
 const fontSizes = [16, 20, 24, 28, 32, 40, 48]
 const alignments = [
   { label: 'Left', value: 'left' },
@@ -103,8 +101,6 @@ const verticalAlignments = [
         </select>
       </label>
     </div>
-
-    <button class="apply-button" @click="$emit('apply')">Apply style</button>
   </div>
 </template>
 
@@ -170,25 +166,13 @@ input[type='color'] {
   padding: 4px;
 }
 
-.apply-button {
-  min-width: 108px;
-  background: linear-gradient(135deg, #2d62ff, #5e8bff);
-  border-color: transparent;
-  color: white;
-}
-
 @media (max-width: 720px) {
   .toolbar {
     align-items: stretch;
   }
 
-  .toolbar-group,
-  .apply-button {
+  .toolbar-group {
     width: 100%;
-  }
-
-  .apply-button {
-    min-height: 44px;
   }
 }
 </style>

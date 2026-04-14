@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import ToolbarPanel from './ToolbarPanel.vue'
 import { saveRange, restoreRange, getRange } from '../composables/useSelection'
 import { styleState, styleToCss } from '../composables/useStyle'
@@ -22,7 +22,6 @@ function applyStyleToSelection() {
 
   const range = getRange()
   if (!range || range.collapsed) {
-    editorRef.value?.focus()
     return
   }
 
@@ -53,6 +52,14 @@ function onInput() {
     }
   })
 }
+
+watch(
+  styleState,
+  () => {
+    applyStyleToSelection()
+  },
+  { deep: true },
+)
 </script>
 
 <template>
@@ -68,7 +75,7 @@ function onInput() {
     </section>
 
     <section class="workspace-card">
-      <ToolbarPanel @apply="applyStyleToSelection" />
+      <ToolbarPanel />
 
       <div class="editor-stage" :style="editorStyle">
         <div
@@ -81,8 +88,8 @@ function onInput() {
           @focus="saveSelection"
           @input="onInput"
         >
-          Select this text first, then use the toolbar above to apply font size, colors,
-          stroke, letter spacing, and line height.
+          Select this text first, then change the toolbar settings to apply font size,
+          colors, stroke, letter spacing, and line height instantly.
         </div>
       </div>
     </section>
