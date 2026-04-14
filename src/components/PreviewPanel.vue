@@ -87,13 +87,13 @@ const activeMultilinePages = computed(() => {
 
   return [
     {
-      key: `from-${transitionState.value.from}-${transitionState.value.phase}`,
+      key: `from-${transitionState.value.from}-${transitionState.value.to}`,
       html: pagesHtml.value[transitionState.value.from] ?? '&nbsp;',
       layerStyle: getTransitionLayerStyle('from'),
       contentStyle: getMultilineContentStyle(transitionState.value.from),
     },
     {
-      key: `to-${transitionState.value.to}-${transitionState.value.phase}`,
+      key: `to-${transitionState.value.from}-${transitionState.value.to}`,
       html: pagesHtml.value[transitionState.value.to] ?? '&nbsp;',
       layerStyle: getTransitionLayerStyle('to'),
       contentStyle: getMultilineContentStyle(transitionState.value.to),
@@ -419,10 +419,12 @@ function goToPage(targetPage) {
 
   nextTick(() => {
     requestAnimationFrame(() => {
-      transitionState.value = {
-        ...transitionState.value,
-        phase: 'running',
-      }
+      requestAnimationFrame(() => {
+        transitionState.value = {
+          ...transitionState.value,
+          phase: 'running',
+        }
+      })
     })
   })
 
