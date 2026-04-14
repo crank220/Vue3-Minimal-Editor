@@ -1,4 +1,5 @@
 <script setup>
+import { computed } from 'vue'
 import { styleState } from '../composables/useStyle'
 
 const fontSizes = [16, 20, 24, 28, 32, 40, 48]
@@ -13,22 +14,38 @@ const verticalAlignments = [
   { label: 'Center', value: 'center' },
   { label: 'Bottom', value: 'flex-end' },
 ]
+
+const backgroundValue = computed({
+  get: () => (styleState.background === 'transparent' ? '#ffffff' : styleState.background),
+  set: (value) => {
+    styleState.background = value
+  },
+})
 </script>
 
 <template>
   <div class="toolbar">
     <div class="toolbar-group">
-      <button :class="{ active: styleState.bold }" @click="styleState.bold = !styleState.bold">
+      <button
+        type="button"
+        :class="{ active: styleState.bold }"
+        @mousedown.prevent
+        @click="styleState.bold = !styleState.bold"
+      >
         B
       </button>
       <button
+        type="button"
         :class="{ active: styleState.italic }"
+        @mousedown.prevent
         @click="styleState.italic = !styleState.italic"
       >
         I
       </button>
       <button
+        type="button"
         :class="{ active: styleState.underline }"
+        @mousedown.prevent
         @click="styleState.underline = !styleState.underline"
       >
         U
@@ -50,7 +67,7 @@ const verticalAlignments = [
 
       <label>
         Background
-        <input v-model="styleState.background" type="color" />
+        <input v-model="backgroundValue" type="color" />
       </label>
     </div>
 

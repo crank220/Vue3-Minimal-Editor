@@ -33,6 +33,10 @@ export function restoreRange(root) {
   selection?.addRange(savedRange)
 }
 
+export function setRange(range) {
+  savedRange = range?.cloneRange?.() ?? null
+}
+
 export function getRange() {
   return savedRange
 }

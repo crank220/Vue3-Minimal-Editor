@@ -1,45 +1,52 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
 import ToolbarPanel from './ToolbarPanel.vue'
-import { saveRange, restoreRange, getRange } from '../composables/useSelection'
-import { styleState, styleToCss } from '../composables/useStyle'
+import { saveRange, getRange, setRange } from '../composables/useSelection'
+import { DEFAULT_STYLE_STATE, styleState, styleToCss } from '../composables/useStyle'
 import { normalize } from '../utils/normalize'
 
 const editorRef = ref(null)
+const isSyncingToolbar = ref(false)
 
 const editorStyle = computed(() => ({
   textAlign: styleState.textAlign,
   alignItems: styleState.verticalAlign,
-  lineHeight: styleState.lineHeight,
 }))
 
 function saveSelection() {
+  clearSelectionPreview()
   saveRange(editorRef.value)
+  syncToolbarFromSelection()
 }
 
 function applyStyleToSelection() {
-  restoreRange(editorRef.value)
-
-  const range = getRange()
+  const range = getRange()?.cloneRange()
   if (!range || range.collapsed) {
     return
   }
 
-  const span = document.createElement('span')
+  const targetSpan = getSelectedSpan(range)
+  const span = targetSpan ?? document.createElement('span')
+
+  clearSelectionPreview()
   Object.assign(span.style, styleToCss(styleState))
 
-  try {
-    range.surroundContents(span)
-  } catch {
+  if (!targetSpan) {
     const content = range.extractContents()
+    unwrapFragmentSpans(content)
     span.appendChild(content)
     range.insertNode(span)
   }
 
+  const nextRange = document.createRange()
+  nextRange.selectNodeContents(span)
+  setRange(nextRange)
+  setSelectionPreview(span)
+
   nextTick(() => {
     if (editorRef.value) {
       normalize(editorRef.value)
-      saveRange(editorRef.value)
+      syncToolbarFromSelection()
     }
   })
 }
@@ -49,16 +56,215 @@ function onInput() {
     if (editorRef.value) {
       normalize(editorRef.value)
       saveRange(editorRef.value)
+      syncToolbarFromSelection()
     }
   })
+}
+
+function syncToolbarFromSelection() {
+  const range = getRange()
+  if (!editorRef.value || !range) {
+    return
+  }
+
+  const target = getSelectionStyleTarget(range, editorRef.value)
+  if (!target) {
+    return
+  }
+
+  const computedStyle = window.getComputedStyle(target)
+
+  patchStyleState({
+    fontSize: Math.round(parsePixelValue(computedStyle.fontSize, DEFAULT_STYLE_STATE.fontSize)),
+    color: parseColorValue(computedStyle.color, DEFAULT_STYLE_STATE.color),
+    background: parseColorValue(computedStyle.backgroundColor, DEFAULT_STYLE_STATE.background),
+    bold: isBoldWeight(computedStyle.fontWeight),
+    italic: computedStyle.fontStyle === 'italic',
+    underline: computedStyle.textDecorationLine.includes('underline'),
+    letterSpacing: parsePixelValue(
+      computedStyle.letterSpacing,
+      DEFAULT_STYLE_STATE.letterSpacing,
+    ),
+    lineHeight: parseLineHeight(
+      computedStyle.lineHeight,
+      computedStyle.fontSize,
+      DEFAULT_STYLE_STATE.lineHeight,
+    ),
+    strokeColor: parseColorValue(
+      computedStyle.getPropertyValue('-webkit-text-stroke-color'),
+      DEFAULT_STYLE_STATE.strokeColor,
+    ),
+    strokeWidth: parsePixelValue(
+      computedStyle.getPropertyValue('-webkit-text-stroke-width'),
+      DEFAULT_STYLE_STATE.strokeWidth,
+    ),
+  })
+}
+
+function patchStyleState(nextState) {
+  isSyncingToolbar.value = true
+  Object.assign(styleState, nextState)
+  isSyncingToolbar.value = false
+}
+
+function getSelectionStyleTarget(range, root) {
+  const startElement = getElementFromNode(range.startContainer, root)
+  if (startElement) {
+    return startElement.closest('span') ?? startElement
+  }
+
+  return root
+}
+
+function getElementFromNode(node, root) {
+  const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement
+  if (!element || !root.contains(element)) {
+    return root
+  }
+
+  return element
+}
+
+function getSelectedSpan(range) {
+  const container = range.startContainer
+
+  if (container === range.endContainer && container.nodeType === Node.ELEMENT_NODE) {
+    if (container.tagName === 'SPAN' && range.startOffset === 0 && range.endOffset === container.childNodes.length) {
+      return container
+    }
+
+    if (range.endOffset - range.startOffset === 1) {
+      const child = container.childNodes[range.startOffset]
+      if (child?.nodeType === Node.ELEMENT_NODE && child.tagName === 'SPAN') {
+        return child
+      }
+    }
+  }
+
+  if (
+    container.nodeType === Node.TEXT_NODE &&
+    range.endContainer.nodeType === Node.TEXT_NODE &&
+    container.parentElement &&
+    container.parentElement === range.endContainer.parentElement &&
+    container.parentElement.tagName === 'SPAN' &&
+    range.startOffset === 0 &&
+    range.endOffset === range.endContainer.textContent.length &&
+    container.parentElement.childNodes.length === 1
+  ) {
+    return container.parentElement
+  }
+
+  return null
+}
+
+function unwrapFragmentSpans(fragment) {
+  const spans = [...fragment.querySelectorAll('span')]
+
+  spans.forEach((child) => {
+    const parent = child.parentNode
+    if (!parent) {
+      return
+    }
+
+    while (child.firstChild) {
+      parent.insertBefore(child.firstChild, child)
+    }
+
+    child.remove()
+  })
+}
+
+function clearSelectionPreview() {
+  editorRef.value
+    ?.querySelectorAll('[data-selection-preview="true"]')
+    .forEach((element) => element.removeAttribute('data-selection-preview'))
+}
+
+function setSelectionPreview(element) {
+  if (!element) {
+    return
+  }
+
+  element.setAttribute('data-selection-preview', 'true')
+}
+
+function parsePixelValue(value, fallback) {
+  if (!value || value === 'normal') {
+    return fallback
+  }
+
+  const number = Number.parseFloat(value)
+  return Number.isFinite(number) ? Number(number.toFixed(2)) : fallback
+}
+
+function parseLineHeight(value, fontSize, fallback) {
+  if (!value || value === 'normal') {
+    return fallback
+  }
+
+  const lineHeight = Number.parseFloat(value)
+  const size = Number.parseFloat(fontSize)
+  if (!Number.isFinite(lineHeight) || !Number.isFinite(size) || size === 0) {
+    return fallback
+  }
+
+  return Number((lineHeight / size).toFixed(2))
+}
+
+function parseColorValue(value, fallback) {
+  if (!value) {
+    return fallback
+  }
+
+  if (value === 'transparent' || value === 'rgba(0, 0, 0, 0)') {
+    return fallback === 'transparent' ? 'transparent' : fallback
+  }
+
+  if (value.startsWith('#')) {
+    return value.toLowerCase()
+  }
+
+  const channels = value.match(/[\d.]+/g)
+  if (!channels || channels.length < 3) {
+    return fallback
+  }
+
+  const alpha = channels[3] === undefined ? 1 : Number.parseFloat(channels[3])
+  if (Number.isFinite(alpha) && alpha === 0) {
+    return fallback === 'transparent' ? 'transparent' : fallback
+  }
+
+  const [red, green, blue] = channels.slice(0, 3).map((channel) => {
+    const number = Number.parseFloat(channel)
+    return Math.max(0, Math.min(255, Math.round(number)))
+  })
+
+  return `#${toHex(red)}${toHex(green)}${toHex(blue)}`
+}
+
+function isBoldWeight(value) {
+  if (value === 'bold') {
+    return true
+  }
+
+  const weight = Number.parseInt(value, 10)
+  return Number.isFinite(weight) && weight >= 600
+}
+
+function toHex(value) {
+  return value.toString(16).padStart(2, '0')
 }
 
 watch(
   styleState,
   () => {
+    if (isSyncingToolbar.value) {
+      return
+    }
+
     applyStyleToSelection()
   },
-  { deep: true },
+  { deep: true, flush: 'sync' },
 )
 </script>
 
@@ -174,6 +380,11 @@ code {
   word-break: break-word;
   font-size: 24px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.editor :deep([data-selection-preview='true']) {
+  border-radius: 4px;
+  box-shadow: inset 0 -1.1em rgba(54, 107, 255, 0.2);
 }
 
 .editor:focus {

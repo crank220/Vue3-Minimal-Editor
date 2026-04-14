@@ -1,6 +1,6 @@
 import { reactive } from 'vue'
 
-export const styleState = reactive({
+export const DEFAULT_STYLE_STATE = {
   fontSize: 24,
   color: '#000000',
   background: 'transparent',
@@ -13,6 +13,10 @@ export const styleState = reactive({
   strokeWidth: 0,
   textAlign: 'left',
   verticalAlign: 'center',
+}
+
+export const styleState = reactive({
+  ...DEFAULT_STYLE_STATE,
 })
 
 export function styleToCss(state) {
