@@ -548,8 +548,31 @@ watch(
             @input="onInput"
             @scroll="syncEditorScrollState"
           >
-            Select this text first, then change the toolbar settings to apply font size,
-            colors, stroke, letter spacing, and line height instantly.
+一个基于 `Vue 3 + Vite` 的文本编辑、实时预览、分页播放与 PNG 切图工具。
+
+这个项目不是通用型富文本编辑器，而是一个“排版可控、预览可控、切图可控”的前端文本引擎。它直接建立在浏览器原生能力之上：`contenteditable`、`Range`、`Selection`、DOM 归一化、Canvas 渲染，不依赖 Quill、Slate、Tiptap 等第三方编辑器框架。
+
+项目当前关注的核心目标有 4 个：
+
+1. 选区稳定：工具栏操作不应打断文本选中，也不应因为输入数值而丢失选区。
+2. 结构稳定：编辑区 DOM 必须尽量保持简单、可预测，避免重复嵌套和样式碎片化。
+3. 预览稳定：预览区应当尽量复用编辑区的同源内容和同源盒模型。
+4. 导出稳定：切图不依赖 `foreignObject`，避免 canvas 被污染导致 PNG 导出失败。
+
+## 项目能力
+
+当前实现的能力包括：
+
+1. 在 `contenteditable` 编辑区中选择文本，并立即应用工具栏样式。
+2. 支持字体、字号、文字颜色、背景色、粗体、斜体、下划线。
+3. 支持字间距、行高、描边颜色、描边宽度、描边位置。
+4. 支持文本水平对齐、垂直对齐。
+5. 支持编辑区宽度、高度、四向内边距设置。
+6. 支持多行预览和单行预览两种模式。
+7. 多行模式支持静态翻页和方向翻页动画。
+8. 单行模式支持静态、左移、右移、无缝循环。
+9. 支持按预览结果生成 PNG，并在页面下方查看切图预览。
+10. 支持自定义编辑区悬浮滚动条，鼠标移入时显示，且不挤压内容。
           </div>
 
           <div v-if="hasEditorScroll" class="editor-scrollbar">
