@@ -1,46 +1,64 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
+// 预览面板负责三件事：
+// 1. 按编辑区当前内容生成多行/单行的实时预览；
+// 2. 在多行模式下控制顺序分页和翻页动画；
+// 3. 在需要时把当前预览切成 PNG，并以下方图片列表的形式展示出来。
 const props = defineProps({
+  // 多行模式使用的完整富文本 HTML。
   contentHtml: {
     type: String,
     default: '',
   },
+  // 单行模式使用的富文本 HTML。这里和多行分开传入，便于上层按不同规则整理内容。
   singleLineHtml: {
     type: String,
     default: '',
   },
+  // 编辑区尺寸与内边距配置，预览和切图都以这组盒模型数据为准。
   boxMetrics: {
     type: Object,
     required: true,
   },
+  // 预览模式、翻页、切图、单行动画等全部交互配置。
   previewConfig: {
     type: Object,
     required: true,
   },
+  // 水平对齐方式，和编辑区保持一致。
   textAlign: {
     type: String,
     default: 'left',
   },
+  // 垂直对齐方式，用于单行模式和多行最后一页的垂直分布。
   verticalAlign: {
     type: String,
     default: 'center',
   },
 })
 
+// 隐藏测量层：多行用来计算分页高度，单行用来测量整条文字的实际宽度。
 const multilineMeasureRef = ref(null)
 const singleMeasureRef = ref(null)
 
+// 当前页与多行分页状态。
 const currentPage = ref(0)
 const hasTruncatedPages = ref(false)
 const multilinePageCount = ref(1)
+
+// 切图结果与切图过程状态。
 const cutImagePreviews = ref([])
 const cutImageError = ref('')
 const isGeneratingCutImages = ref(false)
 
+// 单行滚动偏移量与单行原始宽度。
 const singleOffset = ref(0)
 const singleRawWidth = ref(0)
 
+// 多行翻页动画状态。
+// from/to 表示当前动画涉及的起始页和目标页；
+// phase 用于区分“准备阶段”和“真正执行 transition 的阶段”。
 const transitionState = ref({
   active: false,
   phase: 'idle',
@@ -49,11 +67,18 @@ const transitionState = ref({
   direction: 'static',
 })
 
+// 定时器与测量上下文。
+// pageTimerId 控制多行自动翻页停留时间；
+// transitionTimerId 控制翻页动画结束时机；
+// animationFrameId 控制单行滚动动画；
+// textMeasureContext 用于复用 canvas 文本测量能力，减少重复创建开销。
 let pageTimerId = 0
 let transitionTimerId = 0
 let animationFrameId = 0
 let textMeasureContext = null
 
+// 纯 canvas 渲染时的默认文本样式基线。
+// 当某些 HTML 片段没有显式样式时，会从这里补齐缺省值。
 const BASE_RENDER_STYLE = {
   fontSize: 24,
   fontFamily: "'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif",
@@ -69,16 +94,22 @@ const BASE_RENDER_STYLE = {
   textShadows: [],
 }
 
+// 样式解析缓存：
+// parsedTokenStyleCache 针对 style 字符串做解析缓存；
+// computedCanvasStyleCache 针对真实 DOM 元素的 computed style 做缓存。
 const parsedTokenStyleCache = new Map()
 const computedCanvasStyleCache = new WeakMap()
 
+// 垂直对齐需要归一化到 flex 的对齐值，避免上层传入异常值导致布局偏移。
 const normalizedVerticalAlign = computed(() => normalizeVerticalAlign(props.verticalAlign))
 
+// 预览页统一尺寸。多行页层和单行视口都依赖这组基础尺寸。
 const previewPageStyle = computed(() => ({
   width: `${props.boxMetrics.width}px`,
   height: `${props.boxMetrics.height}px`,
 }))
 
+// 单行预览视口样式：完整保留四向 padding，并在容器层处理垂直对齐。
 const singleLineViewportStyle = computed(() => ({
   ...previewPageStyle.value,
   paddingTop: `${props.boxMetrics.paddingTop}px`,
@@ -89,6 +120,7 @@ const singleLineViewportStyle = computed(() => ({
   alignItems: normalizedVerticalAlign.value,
 }))
 
+// 多行连续流样式：用于真实分页视图和隐藏测量层，确保两者版式来源完全一致。
 const multilineFlowStyle = computed(() => ({
   width: `${props.boxMetrics.width}px`,
   minHeight: `${props.boxMetrics.height}px`,
@@ -99,15 +131,19 @@ const multilineFlowStyle = computed(() => ({
   textAlign: props.textAlign,
 }))
 
+// 空内容时用不换行空格兜底，避免测量层高度和切图结果变成 0。
 const safeContentHtml = computed(() => props.contentHtml || '&nbsp;')
 const safeSingleLineHtml = computed(() => props.singleLineHtml || '&nbsp;')
 
+// 多行页码与切图宽度派生值。
 const visiblePageCount = computed(() => multilinePageCount.value)
 const multilinePageText = computed(() => `${Math.min(currentPage.value + 1, visiblePageCount.value)} / ${visiblePageCount.value}`)
 const effectiveCutImageWidth = computed(() =>
   clampCutImageWidth(props.previewConfig.cutImageWidth || props.boxMetrics.width),
 )
 
+// 当前真正需要渲染到预览视口中的页层集合。
+// 静止时只渲染当前页；动画时同时渲染“上一页”和“目标页”，保证 transition 连续执行。
 const activeMultilinePages = computed(() => {
   if (!transitionState.value.active) {
     return [
@@ -136,11 +172,14 @@ const activeMultilinePages = computed(() => {
   ]
 })
 
+// 单行模式下的宽度、切片数和无缝滚动副本数量。
 const singleEffectiveWidth = computed(() => Math.min(singleRawWidth.value, 65536))
 const singleSliceCount = computed(() => Math.max(1, Math.ceil(singleEffectiveWidth.value / 8096)))
 const singleIsTruncated = computed(() => singleRawWidth.value > 65536)
 const singleCopies = computed(() => (props.previewConfig.singleLineSeamless ? [0, 1, 2] : [0]))
 
+// 单行滚动轨道位移样式。
+// 无缝模式通过三份副本拼接形成循环，不无缝时直接平移单份内容。
 const singleTrackStyle = computed(() => {
   if (props.previewConfig.singleLineMode === 'static') {
     return {
@@ -164,6 +203,7 @@ const singleTrackStyle = computed(() => {
   }
 })
 
+// 只要预览源内容、盒模型、模式或动画参数发生变化，就重新测量并重启预览状态。
 watch(
   () => [
     props.contentHtml,
@@ -200,17 +240,21 @@ watch(
   { immediate: true },
 )
 
+// 组件销毁时统一停止计时器和动画帧，避免页面离开后仍然有后台任务在运行。
 onBeforeUnmount(() => {
   stopMultilineAutoplay()
   stopPageTransition()
   stopSingleLineAnimation()
 })
 
+// 暴露切图方法，供上层点击工具栏按钮时直接调用。
 defineExpose({
   generateCutImages,
 })
 
 function paginateMultilineContent() {
+  // 通过隐藏测量层的 scrollHeight 计算总页数。
+  // 这里不会修改真实内容，只负责得出“当前内容在当前尺寸下应该分成几页”。
   if (!multilineMeasureRef.value) {
     multilinePageCount.value = 1
     hasTruncatedPages.value = false
@@ -228,6 +272,7 @@ function paginateMultilineContent() {
   }
 }
 
+// 把富文本 HTML 拆成“逐字符 token”序列，方便后续做精确的 canvas 排版和切图。
 function tokenizeHtml(html) {
   const container = document.createElement('div')
   container.innerHTML = html
@@ -237,6 +282,7 @@ function tokenizeHtml(html) {
   return tokens
 }
 
+// 深度遍历节点树，继承并合并父级内联样式，把文本拆成单字符 token。
 function walkNodes(node, inheritedStyle, tokens) {
   node.childNodes.forEach((child) => {
     if (child.nodeType === Node.TEXT_NODE) {
@@ -264,6 +310,7 @@ function walkNodes(node, inheritedStyle, tokens) {
   })
 }
 
+// 合并父子两层 style 文本，后出现的属性覆盖先出现的属性。
 function mergeInlineStyles(parentStyle, childStyle) {
   const map = new Map()
 
@@ -280,6 +327,7 @@ function mergeInlineStyles(parentStyle, childStyle) {
     .join('; ')
 }
 
+// 把内联 style 字符串解析为 [属性名, 属性值] 数组，便于后续合并和缓存。
 function serializeStyleEntries(styleText) {
   return String(styleText ?? '')
     .split(';')
@@ -298,6 +346,7 @@ function serializeStyleEntries(styleText) {
     .filter(Boolean)
 }
 
+// 把 token 列表重新拼回 HTML。这个能力主要用于中间态调试和后续排版扩展。
 function renderTokens(tokens) {
   let html = ''
   let buffer = ''
@@ -326,6 +375,7 @@ function renderTokens(tokens) {
   return html
 }
 
+// 把当前缓冲区中的纯文本包装成带样式的 span，减少重复拼接逻辑。
 function flushBufferedHtml(buffer, styleText) {
   if (!buffer) {
     return ''
@@ -338,6 +388,7 @@ function flushBufferedHtml(buffer, styleText) {
   return `<span style="${escapeAttribute(styleText)}">${buffer}</span>`
 }
 
+// HTML 转义，避免普通文本字符在模板字符串里被当成标签解析。
 function escapeHtml(value) {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -345,16 +396,19 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
 }
 
+// 属性值转义，避免双引号等字符破坏 style 属性结构。
 function escapeAttribute(value) {
   return String(value)
     .replaceAll('&', '&amp;')
     .replaceAll('"', '&quot;')
 }
 
+// 判断测量层是否产生溢出。后续如需更精细分页策略，可以复用这个判断。
 function isMeasureOverflowing(element) {
   return element.scrollHeight > element.clientHeight || element.scrollWidth > element.clientWidth
 }
 
+// 多行自动翻页控制：只在多页且当前模式为 multiline 时启动。
 function restartMultilineAutoplay() {
   stopMultilineAutoplay()
 
@@ -365,6 +419,7 @@ function restartMultilineAutoplay() {
   scheduleNextMultilineTurn()
 }
 
+// 清除多行停留计时器，避免在切页中叠加多个待执行任务。
 function stopMultilineAutoplay() {
   if (!pageTimerId) {
     return
@@ -374,6 +429,7 @@ function stopMultilineAutoplay() {
   pageTimerId = 0
 }
 
+// 上一页按钮。动画执行期间不允许再次触发切页，避免页序错乱。
 function goToPreviousPage() {
   if (multilinePageCount.value <= 1 || transitionState.value.active) {
     return
@@ -382,6 +438,7 @@ function goToPreviousPage() {
   goToPage((currentPage.value - 1 + multilinePageCount.value) % multilinePageCount.value)
 }
 
+// 下一页按钮，逻辑和上一页一致。
 function goToNextPage() {
   if (multilinePageCount.value <= 1 || transitionState.value.active) {
     return
@@ -390,6 +447,9 @@ function goToNextPage() {
   goToPage((currentPage.value + 1) % multilinePageCount.value)
 }
 
+// 多行分页切换的唯一入口。
+// 如果 motion 为 static，则直接切页；
+// 否则先建立 from/to 双层页，再通过 phase 切换触发 CSS transition。
 function goToPage(targetPage) {
   if (targetPage === currentPage.value || transitionState.value.active) {
     return
@@ -415,6 +475,8 @@ function goToPage(targetPage) {
     direction: props.previewConfig.pageTransitionDirection,
   }
 
+  // 连续两帧的 requestAnimationFrame 用来确保浏览器先提交“初始位置”，
+  // 再切到 running 状态，这样 CSS transition 才能被可靠触发。
   nextTick(() => {
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -433,6 +495,7 @@ function goToPage(targetPage) {
   }, clampTransitionMs(props.previewConfig.pageTransitionMs))
 }
 
+// 按配置的停留时长，顺序推进到下一页。
 function scheduleNextMultilineTurn() {
   pageTimerId = window.setTimeout(() => {
     pageTimerId = 0
@@ -440,6 +503,7 @@ function scheduleNextMultilineTurn() {
   }, clampPageStaySeconds(props.previewConfig.pageStaySeconds) * 1000)
 }
 
+// 停止当前翻页动画的结束计时器。
 function stopPageTransition() {
   if (transitionTimerId) {
     window.clearTimeout(transitionTimerId)
@@ -447,6 +511,7 @@ function stopPageTransition() {
   }
 }
 
+// 重置翻页动画状态，让页面回到静止单页展示。
 function resetTransitionState() {
   stopPageTransition()
   transitionState.value = {
@@ -458,6 +523,10 @@ function resetTransitionState() {
   }
 }
 
+// 根据页层角色返回不同样式：
+// idle 表示静止状态；
+// from 表示正在移出的上一页；
+// to 表示承接的目标页。
 function getTransitionLayerStyle(layer) {
   const base = {
     ...previewPageStyle.value,
@@ -493,6 +562,7 @@ function getTransitionLayerStyle(layer) {
   }
 }
 
+// 把方向枚举转换成 translate3d 所需的位移向量。
 function getDirectionVector(direction) {
   if (direction === 'up') {
     return { x: '0%', y: '-100%' }
@@ -509,6 +579,8 @@ function getDirectionVector(direction) {
   return { x: '-100%', y: '0%' }
 }
 
+// 多行页本质上是同一份连续内容的不同纵向切片。
+// 通过 translateY 按页高偏移，保证预览与测量来源完全一致。
 function getMultilineSliceStyle(pageIndex) {
   return {
     ...multilineFlowStyle.value,
@@ -516,6 +588,7 @@ function getMultilineSliceStyle(pageIndex) {
   }
 }
 
+// 对外暴露的切图入口。切图过程中会锁住按钮，避免重复触发并发任务。
 async function generateCutImages() {
   if (isGeneratingCutImages.value) {
     return
@@ -541,6 +614,7 @@ async function generateCutImages() {
 }
 
 async function buildMultilineCutImages() {
+  // 多行模式直接基于隐藏测量层采集字形位置信息，然后按页高逐页裁出 PNG。
   if (!multilineMeasureRef.value) {
     return []
   }
@@ -565,6 +639,7 @@ async function buildMultilineCutImages() {
 }
 
 async function buildSingleLineCutImages() {
+  // 单行模式先算出整条文本的布局宽度，再按 cut image width 逐段切图。
   const images = []
   const layout = buildTextLayout(safeSingleLineHtml.value, {
     maxWidth: Number.POSITIVE_INFINITY,
@@ -599,6 +674,8 @@ async function buildSingleLineCutImages() {
   return images
 }
 
+// 通用版 canvas 排版入口。当前主要为后续扩展保留，核心思想是：
+// 先算出内容区域尺寸，再根据水平/垂直对齐把每一行依次画上去。
 function renderLayoutToCanvas({
   width,
   height,
@@ -626,6 +703,7 @@ function renderLayoutToCanvas({
   return canvas
 }
 
+// 渲染单行切片。通过负向位移把目标片段移动到画布可见区域，再配合 clip 裁掉两侧内容。
 function renderSingleLineSliceToCanvas({ width, height, sliceStart, totalWidth, layout }) {
   const canvas = createCanvas(width, height)
   const context = getCanvasContext(canvas)
@@ -639,6 +717,7 @@ function renderSingleLineSliceToCanvas({ width, height, sliceStart, totalWidth, 
   return canvas
 }
 
+// 渲染多行某一页。这里只画落在当前页可视区间内的字形。
 function renderMultilineSliceToCanvas(width, height, pageIndex, glyphs) {
   const canvas = createCanvas(width, height)
   const context = getCanvasContext(canvas)
@@ -656,6 +735,7 @@ function renderMultilineSliceToCanvas(width, height, pageIndex, glyphs) {
   return canvas
 }
 
+// 创建指定尺寸的离屏 canvas。
 function createCanvas(width, height) {
   const canvas = document.createElement('canvas')
   canvas.width = Math.max(1, Math.round(width))
@@ -663,6 +743,7 @@ function createCanvas(width, height) {
   return canvas
 }
 
+// 获取 2D 上下文并初始化统一的底色和文本绘制参数。
 function getCanvasContext(canvas) {
   const context = canvas.getContext('2d')
   if (!context) {
@@ -678,10 +759,13 @@ function getCanvasContext(canvas) {
   return context
 }
 
+// 把 canvas 导出为 PNG data URL，供图片预览直接使用。
 function renderCanvasToPng(canvas) {
   return canvas.toDataURL('image/png')
 }
 
+// 从真实 DOM 中逐字符采集字形矩形和样式。
+// 这条路径用于多行切图，因为它最接近浏览器已经完成的最终排版结果。
 function collectMultilineGlyphs(root) {
   const rootRect = root.getBoundingClientRect()
   const glyphs = []
@@ -744,6 +828,8 @@ function collectMultilineGlyphs(root) {
   return glyphs
 }
 
+// 使用纯 canvas 规则重建文本布局。
+// 单行切图依赖这里计算整段内容的宽度和每个字符的落点。
 function buildTextLayout(html, { maxWidth, singleLine }) {
   const tokens = tokenizeHtml(html)
   const baseStyle = getBaseRenderStyle()
@@ -795,6 +881,7 @@ function buildTextLayout(html, { maxWidth, singleLine }) {
   }
 }
 
+// 创建一条空白逻辑行，并用基础样式初始化行高、基线相关数据。
 function createEmptyLine(baseStyle) {
   return {
     commands: [],
@@ -807,6 +894,7 @@ function createEmptyLine(baseStyle) {
   }
 }
 
+// 行结束时做一次最小整理，避免宽度出现负值。
 function finalizeLine(line) {
   return {
     ...line,
@@ -814,6 +902,8 @@ function finalizeLine(line) {
   }
 }
 
+// 把单行或多行中的一整行命令绘制到 canvas 上。
+// clip 参数主要给单行切片使用，只允许可见片段进入最终导出图像。
 function drawLine(context, line, startX, lineTop, clip = null) {
   const baseline =
     lineTop + Math.max(0, (line.lineHeight - line.textHeight) / 2) + line.maxAscent
@@ -834,6 +924,8 @@ function drawLine(context, line, startX, lineTop, clip = null) {
   }
 }
 
+// 多行切图使用的字形绘制入口。
+// 它会把“整篇文档中的绝对位置”转换成“当前页中的相对位置”。
 function drawResolvedGlyph(context, glyph, pageTop) {
   const y = glyph.top - pageTop
   const baseline =
@@ -847,6 +939,8 @@ function drawResolvedGlyph(context, glyph, pageTop) {
   }, glyph.x, baseline, y, glyph.height)
 }
 
+// 实际的单字符绘制函数。
+// 背景色、阴影、描边、填充和下划线都在这里按顺序执行，确保和编辑区显示接近一致。
 function drawCharacter(context, command, x, baseline, lineTop, lineHeight) {
   const { style, char, width, advance } = command
 
@@ -885,12 +979,14 @@ function drawCharacter(context, command, x, baseline, lineTop, lineHeight) {
   }
 }
 
+// 返回 canvas 渲染使用的基础样式对象。
 function getBaseRenderStyle() {
   return finalizeParsedTokenStyle({
     ...BASE_RENDER_STYLE,
   })
 }
 
+// 从真实 DOM 元素读取浏览器计算后的样式，并缓存成 canvas 可直接使用的结构。
 function getComputedCanvasStyle(element) {
   const cached = computedCanvasStyleCache.get(element)
   if (cached) {
@@ -917,6 +1013,8 @@ function getComputedCanvasStyle(element) {
   return style
 }
 
+// 从 token 自带的 style 文本中解析样式。
+// 这条路径和 getComputedCanvasStyle 对应，前者解析 HTML 内联样式，后者读取真实渲染样式。
 function getParsedTokenStyle(styleText) {
   const cacheKey = styleText || '__default__'
   const cached = parsedTokenStyleCache.get(cacheKey)
@@ -948,6 +1046,7 @@ function getParsedTokenStyle(styleText) {
   return parsed
 }
 
+// 统一补齐 font、行高、上下行包围盒和下划线标记，得到完整可绘制的样式对象。
 function finalizeParsedTokenStyle(style) {
   const font = buildCanvasFont(style)
   const lineHeightPx = resolveLineHeightPx(style.lineHeightValue, style.fontSize)
@@ -963,10 +1062,12 @@ function finalizeParsedTokenStyle(style) {
   }
 }
 
+// 拼出 canvas 需要的标准 font 字符串。
 function buildCanvasFont(style) {
   return `${style.fontStyle} ${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`.trim()
 }
 
+// 通过测量 `Mg` 得到近似的 ascent / descent，用于基线和行高计算。
 function measureFontMetrics(font, fontSize) {
   const context = getTextMeasureContext()
   context.font = font
@@ -978,6 +1079,7 @@ function measureFontMetrics(font, fontSize) {
   }
 }
 
+// 测量单个字符的宽度和包含 letter-spacing 的推进宽度。
 function measureCharacter(value, style) {
   const context = getTextMeasureContext()
   context.font = style.font
@@ -989,6 +1091,7 @@ function measureCharacter(value, style) {
   }
 }
 
+// 延迟创建并复用文本测量 canvas 上下文。
 function getTextMeasureContext() {
   if (textMeasureContext) {
     return textMeasureContext
@@ -1004,6 +1107,7 @@ function getTextMeasureContext() {
   return textMeasureContext
 }
 
+// 根据 left / center / right 计算一行在内容区中的起始偏移量。
 function getHorizontalOffset(textAlign, contentWidth, lineWidth) {
   if (textAlign === 'center') {
     return Math.max(0, (contentWidth - lineWidth) / 2)
@@ -1016,6 +1120,7 @@ function getHorizontalOffset(textAlign, contentWidth, lineWidth) {
   return 0
 }
 
+// 根据垂直对齐方式计算整块内容在视口内的纵向偏移。
 function getVerticalOffset(verticalAlign, availableHeight, contentHeight) {
   if (verticalAlign === 'center') {
     return Math.max(0, (availableHeight - contentHeight) / 2)
@@ -1028,6 +1133,7 @@ function getVerticalOffset(verticalAlign, availableHeight, contentHeight) {
   return 0
 }
 
+// 解析文字描边，兼容 `-webkit-text-stroke` 简写和 width/color 分写两种形式。
 function parseStrokeStyle(styleEntries) {
   const shorthand = String(styleEntries.get('-webkit-text-stroke') || '').trim()
   const width =
@@ -1044,6 +1150,7 @@ function parseStrokeStyle(styleEntries) {
   }
 }
 
+// 把 text-shadow 解析成 canvas 可直接绘制的阴影数组。
 function parseTextShadows(value) {
   if (!value || value === 'none') {
     return []
@@ -1068,6 +1175,7 @@ function parseTextShadows(value) {
     .filter(Boolean)
 }
 
+// line-height 既可能是倍数也可能是像素值，这里统一解析成数值。
 function parseLineHeightValue(value, fallback) {
   if (!value || value === 'normal') {
     return fallback
@@ -1081,6 +1189,7 @@ function parseLineHeightValue(value, fallback) {
   return Number.isFinite(number) ? number : fallback
 }
 
+// 把 line-height 的倍数值转换成实际像素值。
 function resolveLineHeightPx(value, fontSize) {
   if (!Number.isFinite(value)) {
     return fontSize * BASE_RENDER_STYLE.lineHeightValue
@@ -1089,11 +1198,13 @@ function resolveLineHeightPx(value, fontSize) {
   return value > 8 ? value : value * fontSize
 }
 
+// 提取 px 数值，失败时回退到给定默认值。
 function parsePx(value, fallback) {
   const number = Number.parseFloat(value)
   return Number.isFinite(number) ? number : fallback
 }
 
+// 透明背景在 canvas 上不需要额外绘制，这里统一转换为 null。
 function normalizeBackgroundColor(value) {
   if (!value) {
     return null
@@ -1107,11 +1218,13 @@ function normalizeBackgroundColor(value) {
   return value
 }
 
+// 当内容或配置变更时，清空旧的 PNG 结果，防止用户看到过期切图。
 function resetCutImages() {
   cutImagePreviews.value = []
   cutImageError.value = ''
 }
 
+// 测量单行文本的完整滚动宽度，供动画和切片数量计算使用。
 function measureSingleLineBounds() {
   if (!singleMeasureRef.value) {
     singleRawWidth.value = 0
@@ -1121,6 +1234,9 @@ function measureSingleLineBounds() {
   singleRawWidth.value = Math.ceil(singleMeasureRef.value.scrollWidth)
 }
 
+// 启动单行滚动动画。
+// seamless 模式始终在固定宽度内循环；
+// 非 seamless 模式则在离开视口后重新从另一侧进入。
 function restartSingleLineAnimation() {
   stopSingleLineAnimation()
 
@@ -1155,6 +1271,7 @@ function restartSingleLineAnimation() {
   })
 }
 
+// 停止单行 requestAnimationFrame 动画。
 function stopSingleLineAnimation() {
   if (!animationFrameId) {
     return
@@ -1164,6 +1281,7 @@ function stopSingleLineAnimation() {
   animationFrameId = 0
 }
 
+// 各类配置值都在这里统一钳制，避免上层传入非法值后破坏预览逻辑。
 function clampPageStaySeconds(value) {
   const number = Number.parseInt(value, 10)
   if (!Number.isFinite(number)) {
@@ -1200,6 +1318,7 @@ function clampSingleLineSpeed(value) {
   return Math.min(9, Math.max(1, number))
 }
 
+// 垂直对齐只允许三种安全值，其它输入一律回退到 center。
 function normalizeVerticalAlign(value) {
   if (value === 'flex-start' || value === 'center' || value === 'flex-end') {
     return value
@@ -1211,6 +1330,7 @@ function normalizeVerticalAlign(value) {
 
 <template>
   <section class="preview-stage">
+    <!-- 预览头部：展示当前输出模式以及页数/切片数摘要。 -->
     <div class="preview-header">
       <div>
         <p class="preview-eyebrow">Preview</p>
@@ -1229,6 +1349,7 @@ function normalizeVerticalAlign(value) {
     </div>
 
     <div v-if="previewConfig.format === 'multiline'" class="preview-mode">
+      <!-- 多行模式工具条：控制顺序翻页，并展示 motion、transition、stay 参数。 -->
       <div class="preview-toolbar">
         <div class="toolbar-group">
           <button type="button" class="nav-button" @click="goToPreviousPage">Prev</button>
@@ -1243,6 +1364,7 @@ function normalizeVerticalAlign(value) {
         </div>
       </div>
 
+      <!-- 多行可视页栈：静止时只有一层，动画执行时会同时渲染 from/to 两层。 -->
       <div
         class="preview-viewport preview-page-stack"
         :style="{ width: `${boxMetrics.width}px`, height: `${boxMetrics.height}px` }"
@@ -1259,6 +1381,7 @@ function normalizeVerticalAlign(value) {
         </div>
       </div>
 
+      <!-- 隐藏测量层：专门用于计算 scrollHeight 和分页，不参与实际展示。 -->
       <div
         ref="multilineMeasureRef"
         class="preview-page preview-flow-measure"
@@ -1279,6 +1402,7 @@ function normalizeVerticalAlign(value) {
     </div>
 
     <div v-else class="preview-mode">
+      <!-- 单行模式工具条：展示当前滚动模式、速度和是否无缝衔接。 -->
       <div class="preview-toolbar">
         <div class="toolbar-group">
           <span class="page-counter">
@@ -1298,6 +1422,7 @@ function normalizeVerticalAlign(value) {
         </div>
       </div>
 
+      <!-- 单行可视区：轨道负责移动文本，隐藏测量层负责给出完整宽度。 -->
       <div class="preview-viewport preview-singleline-viewport" :style="singleLineViewportStyle">
         <div class="single-line-track" :style="singleTrackStyle">
           <div
@@ -1322,6 +1447,7 @@ function normalizeVerticalAlign(value) {
     </div>
   </section>
 
+  <!-- PNG 切图结果区：只有在生成中、已有结果或出现错误时才渲染。 -->
   <section v-if="isGeneratingCutImages || cutImagePreviews.length || cutImageError" class="cut-preview-stage">
     <div class="preview-header">
       <div>
@@ -1353,6 +1479,7 @@ function normalizeVerticalAlign(value) {
 </template>
 
 <style scoped>
+/* 预览区与切图区采用统一卡片视觉，方便用户直接对照内容和导出结果。 */
 .preview-stage {
   margin-top: 18px;
   padding: 20px;
@@ -1373,6 +1500,7 @@ function normalizeVerticalAlign(value) {
   box-shadow: 0 24px 80px rgba(34, 49, 74, 0.12);
 }
 
+/* 头部和工具条统一使用弹性布局，窄屏时允许自动换行。 */
 .preview-header,
 .preview-toolbar {
   display: flex;
@@ -1397,6 +1525,7 @@ h2 {
   line-height: 1.1;
 }
 
+/* 模式标签、页码和状态文本都使用胶囊标签样式进行统一表达。 */
 .preview-meta,
 .toolbar-group {
   display: flex;
@@ -1423,6 +1552,7 @@ h2 {
   margin-bottom: 12px;
 }
 
+/* 所有预览视口都负责裁切超出内容，避免动画层和单行轨道溢出。 */
 .preview-viewport {
   overflow: hidden;
   border-radius: 22px;
@@ -1440,6 +1570,7 @@ h2 {
   line-height: 1.5;
 }
 
+/* 多行模式通过绝对定位叠放页层，再用 transform 执行顺序翻页动画。 */
 .preview-page-stack {
   position: relative;
 }
@@ -1452,6 +1583,7 @@ h2 {
   will-change: transform;
 }
 
+/* 真实显示层与隐藏测量层必须共享完全一致的排版规则。 */
 .preview-page-flow,
 .preview-flow-measure {
   box-sizing: border-box;
@@ -1475,6 +1607,7 @@ h2 {
   pointer-events: none;
 }
 
+/* 单行模式把整条文本放进可移动轨道中，轨道不换行。 */
 .preview-singleline-viewport {
   position: relative;
   display: flex;
@@ -1492,6 +1625,7 @@ h2 {
   will-change: transform;
 }
 
+/* 单行副本与测量层保留相同文字样式，保证宽度测量和展示一致。 */
 .single-line-copy {
   flex: 0 0 auto;
   max-width: 65536px;
@@ -1514,11 +1648,13 @@ h2 {
   line-height: inherit;
 }
 
+/* 单行模式中 `<br>` 没有意义，因此直接隐藏，避免影响宽度计算。 */
 .single-line-copy :deep(br),
 .single-line-measure :deep(br) {
   display: none;
 }
 
+/* 翻页按钮保持简单的圆角描边风格，不喧宾夺主。 */
 .nav-button {
   min-width: 72px;
   min-height: 36px;
@@ -1541,10 +1677,12 @@ h2 {
   color: #5b6a7f;
 }
 
+/* 只有在超页数、超宽度或切图失败等异常情况下才显示警告色。 */
 .preview-warning {
   color: #b14f18;
 }
 
+/* 切图结果一张图占一行，便于逐页核对导出效果。 */
 .cut-preview-list {
   display: grid;
   gap: 16px;
@@ -1572,6 +1710,7 @@ h2 {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
+/* 窄屏下收紧卡片边距，避免预览区域过度占用横向空间。 */
 @media (max-width: 720px) {
   .preview-stage {
     padding: 14px;

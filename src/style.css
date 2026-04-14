@@ -1,3 +1,5 @@
+/* 全局视觉基线：
+   统一根字号、字体、背景以及浏览器文本渲染策略。 */
 :root {
   font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   line-height: 1.5;
@@ -13,26 +15,31 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* 所有元素统一使用 border-box，避免组件内部计算宽高时出现偏差。 */
 * {
   box-sizing: border-box;
 }
 
+/* 让页面根节点至少撑满视口高度，给编辑器和预览面板提供稳定的布局空间。 */
 html,
 body,
 #app {
   min-height: 100vh;
 }
 
+/* 去掉浏览器默认 body 外边距，由应用自己控制页面留白。 */
 body {
   margin: 0;
 }
 
+/* 表单控件继承当前上下文的字体，避免工具栏控件出现样式割裂。 */
 button,
 input,
 select {
   font: inherit;
 }
 
+/* 全局按钮默认显示手型光标，提升交互可感知性。 */
 button {
   cursor: pointer;
 }

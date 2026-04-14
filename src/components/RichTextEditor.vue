@@ -1,4 +1,9 @@
 <script setup>
+// 主编辑器组件。
+// 这里负责三件事：
+// 1. 管理 contenteditable 编辑区；
+// 2. 把工具栏状态即时应用到选中文本；
+// 3. 将编辑内容同步给预览区与切图区。
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import PreviewPanel from './PreviewPanel.vue'
 import ToolbarPanel from './ToolbarPanel.vue'
@@ -15,6 +20,7 @@ import {
 } from '../composables/useStyle'
 import { normalize } from '../utils/normalize'
 
+// 编辑区 DOM、预览组件实例以及若干联动状态。
 const editorRef = ref(null)
 const previewPanelRef = ref(null)
 const isSyncingToolbar = ref(false)
@@ -28,11 +34,13 @@ const editorScrollState = ref({
   scrollTop: 0,
 })
 
+// 编辑舞台的对齐方式由共享样式状态驱动，用于控制编辑区在容器中的停靠位置。
 const editorStyle = computed(() => ({
   textAlign: styleState.textAlign,
   alignItems: styleState.verticalAlign,
 }))
 
+// 将输入状态标准化为可直接用于布局计算的数字盒模型。
 const editorBoxMetrics = computed(() => ({
   width: normalizeDimension(editorBoxState.width, DEFAULT_EDITOR_BOX_STATE.width),
   height: normalizeDimension(editorBoxState.height, DEFAULT_EDITOR_BOX_STATE.height),
@@ -42,6 +50,7 @@ const editorBoxMetrics = computed(() => ({
   paddingLeft: normalizeSpacing(editorBoxState.paddingLeft, DEFAULT_EDITOR_BOX_STATE.paddingLeft),
 }))
 
+// 将数字盒模型转换为编辑区 DOM 可直接使用的内联样式。
 const editorBoxStyle = computed(() => ({
   width: `${editorBoxMetrics.value.width}px`,
   height: `${editorBoxMetrics.value.height}px`,
@@ -51,11 +60,13 @@ const editorBoxStyle = computed(() => ({
   paddingLeft: `${editorBoxMetrics.value.paddingLeft}px`,
 }))
 
+// 判断编辑区当前是否真的需要显示滚动指示器。
 const hasEditorScroll = computed(
   () => editorScrollState.value.scrollHeight > editorScrollState.value.clientHeight + 1,
 )
 
 const editorScrollThumbStyle = computed(() => {
+  // 根据滚动比例计算悬浮滚动条 thumb 的高度和位移。
   const { clientHeight, scrollHeight, scrollTop } = editorScrollState.value
   if (!hasEditorScroll.value || clientHeight <= 0 || scrollHeight <= 0) {
     return {
@@ -76,6 +87,8 @@ const editorScrollThumbStyle = computed(() => {
 })
 
 function saveSelection() {
+  // 在鼠标抬起、键盘选择或重新聚焦后缓存选区。
+  // 同时刷新工具栏回显、预览 HTML 和滚动状态。
   clearSelectionPreview()
   saveRange(editorRef.value)
   syncToolbarFromSelection()
@@ -84,6 +97,9 @@ function saveSelection() {
 }
 
 function applyStyleToSelection() {
+  // 将当前工具栏状态应用到缓存选区。
+  // 如果命中的是同一个 span，则直接改样式；
+  // 如果是跨节点选区，则抽取内容后重新包裹一个 span。
   const range = getRange()?.cloneRange()
   if (!range || range.collapsed) {
     return
@@ -119,6 +135,10 @@ function applyStyleToSelection() {
 }
 
 function onInput() {
+  // 用户直接在 contenteditable 内输入后：
+  // 1. 做一次 DOM 归一化；
+  // 2. 重新缓存选区；
+  // 3. 同步工具栏与预览数据。
   nextTick(() => {
     if (editorRef.value) {
       normalize(editorRef.value)
@@ -131,6 +151,7 @@ function onInput() {
 }
 
 function syncToolbarFromSelection() {
+  // 从当前选区命中的节点反向读取计算样式，并写回工具栏状态。
   const range = getRange()
   if (!editorRef.value || !range) {
     return
@@ -168,12 +189,15 @@ function syncToolbarFromSelection() {
 }
 
 function patchStyleState(nextState) {
+  // 回填工具栏时需要阻断“工具栏变更 -> 重新套样式”的监听回路。
   isSyncingToolbar.value = true
   Object.assign(styleState, nextState)
   isSyncingToolbar.value = false
 }
 
 function getSelectionStyleTarget(range, root) {
+  // 选区回显优先找最近的 span；
+  // 如果没有显式 span，则回落到当前起始元素或编辑区根节点。
   const startElement = getElementFromNode(range.startContainer, root)
   if (startElement) {
     return startElement.closest('span') ?? startElement
@@ -183,6 +207,7 @@ function getSelectionStyleTarget(range, root) {
 }
 
 function getElementFromNode(node, root) {
+  // 将 Range 的起点节点统一解析为元素节点，方便后续查样式。
   const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement
   if (!element || !root.contains(element)) {
     return root
@@ -192,6 +217,8 @@ function getElementFromNode(node, root) {
 }
 
 function getSelectedSpan(range) {
+  // 判断当前选区是否刚好完整命中某个 span。
+  // 如果是，则可以直接原地改这个 span，避免生成多余嵌套。
   const container = range.startContainer
 
   if (container === range.endContainer && container.nodeType === Node.ELEMENT_NODE) {
@@ -224,6 +251,8 @@ function getSelectedSpan(range) {
 }
 
 function unwrapFragmentSpans(fragment) {
+  // 对 extractContents 得到的片段进行扁平化处理，
+  // 防止旧样式 span 被再次包裹，导致层级越来越深。
   const spans = [...fragment.querySelectorAll('span')]
 
   spans.forEach((child) => {
@@ -241,12 +270,14 @@ function unwrapFragmentSpans(fragment) {
 }
 
 function clearSelectionPreview() {
+  // 清理上一次为了“保持选中感”而打上的临时标记。
   editorRef.value
     ?.querySelectorAll('[data-selection-preview="true"]')
     .forEach((element) => element.removeAttribute('data-selection-preview'))
 }
 
 function setSelectionPreview(element) {
+  // 给当前样式应用后的 span 打标记，用于模拟持续选中高亮。
   if (!element) {
     return
   }
@@ -255,6 +286,8 @@ function setSelectionPreview(element) {
 }
 
 function applyStrokeMeta(element) {
+  // 描边位置不是标准 CSS 语义，因此额外通过 data-* 保存原始业务值，
+  // 方便后续重新选中时正确回显工具栏。
   if (!element) {
     return
   }
@@ -272,6 +305,8 @@ function applyStrokeMeta(element) {
 }
 
 function getStrokeMeta(target) {
+  // 先尝试读我们自己保存的 data-* 描边元数据；
+  // 如果没有，再回退到浏览器计算样式。
   const span = target?.closest?.('span') ?? (target?.tagName === 'SPAN' ? target : null)
   if (!span?.dataset.strokeWidth) {
     return {
@@ -295,6 +330,7 @@ function getStrokeMeta(target) {
 }
 
 function parsePixelValue(value, fallback) {
+  // 将 `12px`、`1.5px` 等值统一解析为数字。
   if (!value || value === 'normal') {
     return fallback
   }
@@ -304,6 +340,8 @@ function parsePixelValue(value, fallback) {
 }
 
 function parseLineHeight(value, fontSize, fallback) {
+  // 浏览器计算后的 line-height 可能是像素值，
+  // 这里把它重新换算回工具栏使用的倍数值。
   if (!value || value === 'normal') {
     return fallback
   }
@@ -318,6 +356,7 @@ function parseLineHeight(value, fontSize, fallback) {
 }
 
 function parseColorValue(value, fallback) {
+  // 将 rgb / rgba / hex 等颜色格式统一转换为 hex，便于颜色控件回显。
   if (!value) {
     return fallback
   }
@@ -349,6 +388,7 @@ function parseColorValue(value, fallback) {
 }
 
 function isBoldWeight(value) {
+  // 同时兼容 `bold` 和数值型 font-weight。
   if (value === 'bold') {
     return true
   }
@@ -358,10 +398,13 @@ function isBoldWeight(value) {
 }
 
 function toHex(value) {
+  // 将 0-255 的通道值转换为两位十六进制字符串。
   return value.toString(16).padStart(2, '0')
 }
 
 function syncPreviewSource() {
+  // 将编辑区 HTML 同步给预览区。
+  // 单行预览需要把换行转成空格占位，避免真正换行。
   if (!editorRef.value) {
     return
   }
@@ -375,12 +418,14 @@ function syncPreviewSource() {
 }
 
 function sanitizePreviewHtml(value) {
+  // 预览与切图不需要选区高亮，因此同步前移除临时标记属性。
   return String(value ?? '')
     .replace(/\sdata-selection-preview="true"/g, '')
     .replace(/\sdata-selection-preview='true'/g, '')
 }
 
 function syncEditorScrollState() {
+  // 同步编辑区滚动尺寸，供自定义悬浮滚动条计算使用。
   if (!editorRef.value) {
     return
   }
@@ -393,6 +438,7 @@ function syncEditorScrollState() {
 }
 
 function normalizeDimension(value, fallback) {
+  // 宽高最小限制为 120，避免编辑区被缩成不可用尺寸。
   const number = Number.parseFloat(value)
   if (!Number.isFinite(number)) {
     return fallback
@@ -402,6 +448,7 @@ function normalizeDimension(value, fallback) {
 }
 
 function normalizeSpacing(value, fallback) {
+  // 内边距统一做非负整数约束。
   const number = Number.parseFloat(value)
   if (!Number.isFinite(number)) {
     return fallback
@@ -411,10 +458,12 @@ function normalizeSpacing(value, fallback) {
 }
 
 function requestCutImages() {
+  // 通过子组件暴露的方法触发切图。
   previewPanelRef.value?.generateCutImages?.()
 }
 
 onMounted(() => {
+  // 初次挂载时同步一次预览内容与滚动状态。
   syncPreviewSource()
   syncEditorScrollState()
 })
@@ -422,6 +471,7 @@ onMounted(() => {
 watch(
   previewState,
   () => {
+    // 统一约束预览相关的数值输入范围，避免非法值进入后续布局逻辑。
     previewState.pageStaySeconds = Math.min(
       9999,
       Math.max(1, Number.parseInt(previewState.pageStaySeconds, 10) || DEFAULT_PREVIEW_STATE.pageStaySeconds),
@@ -444,6 +494,7 @@ watch(
 watch(
   editorBoxMetrics,
   () => {
+    // 编辑区尺寸变化后重新计算滚动条状态。
     nextTick(() => {
       syncEditorScrollState()
     })
@@ -454,6 +505,7 @@ watch(
 watch(
   styleState,
   () => {
+    // 工具栏样式一旦变化就立即应用到当前缓存选区。
     if (isSyncingToolbar.value) {
       return
     }
@@ -465,6 +517,7 @@ watch(
 </script>
 
 <template>
+  <!-- 主编辑器页面：工具栏、编辑区、预览区三段式结构。 -->
   <main class="editor-shell">
     <!-- <section class="intro-card">
       <p class="eyebrow">Vue3 Minimal Editor</p>
@@ -477,8 +530,10 @@ watch(
     </section> -->
 
     <section class="workspace-card">
+      <!-- 工具栏只改状态，不直接操作内容。 -->
       <ToolbarPanel @cut-images="requestCutImages" />
 
+      <!-- 编辑舞台负责承载编辑区本体。 -->
       <div class="editor-stage" :style="editorStyle">
         <div class="editor-panel" :style="{ width: editorBoxStyle.width, height: editorBoxStyle.height }">
           <div
@@ -503,6 +558,7 @@ watch(
         </div>
       </div>
 
+      <!-- 预览区与切图区共享同一份编辑内容。 -->
       <PreviewPanel
         ref="previewPanelRef"
         :box-metrics="editorBoxMetrics"
@@ -517,12 +573,14 @@ watch(
 </template>
 
 <style scoped>
+/* 页面外层容器，限制整体最大宽度并控制上下留白。 */
 .editor-shell {
   width: 1200px;
   margin: 0 auto;
   padding: 48px 0 56px;
 }
 
+/* 首页卡片和工作区卡片共用统一的圆角玻璃态风格。 */
 .intro-card,
 .workspace-card {
   border: 1px solid rgba(24, 33, 47, 0.1);
@@ -532,6 +590,7 @@ watch(
   box-shadow: 0 24px 80px rgba(34, 49, 74, 0.12);
 }
 
+/* 以下是默认示例区遗留样式，当前主页面未实际展示。 */
 .intro-card {
   padding: 32px;
 }
@@ -570,6 +629,7 @@ code {
   padding: 20px;
 }
 
+/* 编辑舞台提供外层背景和对齐环境。 */
 .editor-stage {
   min-height: 420px;
   margin-top: 18px;
@@ -582,10 +642,12 @@ code {
   display: flex;
 }
 
+/* 用于承载编辑区本体和悬浮滚动条。 */
 .editor-panel {
   position: relative;
 }
 
+/* 真正的 contenteditable 区域。 */
 .editor {
   overflow: auto;
   padding: 20px 24px;
@@ -601,16 +663,19 @@ code {
   -ms-overflow-style: none;
 }
 
+/* 隐藏浏览器原生滚动条，由自定义悬浮滚动条代替。 */
 .editor::-webkit-scrollbar {
   width: 0;
   height: 0;
 }
 
+/* 为已应用样式的选区保留一层可视高亮。 */
 .editor :deep([data-selection-preview='true']) {
   border-radius: 4px;
   box-shadow: inset 0 -1.1em rgba(54, 107, 255, 0.2);
 }
 
+/* 悬浮滚动条轨道。 */
 .editor-scrollbar {
   position: absolute;
   top: 8px;
@@ -624,16 +689,19 @@ code {
   transition: opacity 120ms ease;
 }
 
+/* 悬停编辑区时再显示滚动条，避免长期占据视觉注意力。 */
 .editor-panel:hover .editor-scrollbar {
   opacity: 1;
 }
 
+/* 滚动条 thumb。 */
 .editor-scrollbar-thumb {
   width: 100%;
   border-radius: 999px;
   background: rgba(24, 33, 47, 0.28);
 }
 
+/* 编辑区聚焦态。 */
 .editor:focus {
   border-color: rgba(54, 107, 255, 0.35);
   box-shadow:
@@ -642,6 +710,7 @@ code {
 }
 
 @media (max-width: 720px) {
+  /* 移动端整体缩小圆角、留白与字号。 */
   .editor-shell {
     width: min(100vw - 20px, 1120px);
     padding: 20px 0 28px;

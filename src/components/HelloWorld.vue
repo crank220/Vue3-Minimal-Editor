@@ -1,13 +1,17 @@
 <script setup>
+// 这个组件是 Vite/Vue 默认模板自带的示例页面。
+// 当前项目主流程没有直接使用它，但保留它有助于后续参考默认资源组织方式。
 import { ref } from 'vue'
 import viteLogo from '../assets/vite.svg'
 import heroImg from '../assets/hero.png'
 import vueLogo from '../assets/vue.svg'
 
+// 演示用计数状态，验证基础响应式和点击事件。
 const count = ref(0)
 </script>
 
 <template>
+  <!-- 首屏展示区：默认模板的视觉主图与计数按钮。 -->
   <section id="center">
     <div class="hero">
       <img :src="heroImg" class="base" width="170" height="179" alt="" />
@@ -23,6 +27,7 @@ const count = ref(0)
 
   <div class="ticks"></div>
 
+  <!-- 模板附带的文档和社区链接区域。 -->
   <section id="next-steps">
     <div id="docs">
       <svg class="icon" role="presentation" aria-hidden="true">
@@ -88,6 +93,7 @@ const count = ref(0)
     </div>
   </section>
 
+  <!-- 纯视觉留白区域，用于拉开模板页面节奏。 -->
   <div class="ticks"></div>
   <section id="spacer"></section>
 </template>
