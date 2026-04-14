@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { styleState } from '../composables/useStyle'
+import { FONT_FAMILY_OPTIONS, editorBoxState, styleState } from '../composables/useStyle'
 
 const fontSizes = [16, 20, 24, 28, 32, 40, 48]
 const alignments = [
@@ -78,12 +78,24 @@ function clampLineHeight(value) {
 
     <div class="toolbar-group field-group">
       <label>
+        Font family
+        <select v-model="styleState.fontFamily">
+          <option v-for="item in FONT_FAMILY_OPTIONS" :key="item.label" :value="item.value">
+            {{ item.label }}
+          </option>
+        </select>
+      </label>
+
+      <label>
         Font size
         <select v-model.number="styleState.fontSize">
           <option v-for="size in fontSizes" :key="size" :value="size">{{ size }}</option>
         </select>
       </label>
+    </div>
 
+
+    <div class="toolbar-group field-group">
       <label>
         Text color
         <input v-model="styleState.color" type="color" />
@@ -114,7 +126,9 @@ function clampLineHeight(value) {
           </option>
         </select>
       </label>
-
+    </div>
+    
+    <div class="toolbar-group field-group">
       <label>
         Letter spacing
         <input v-model.number="styleState.letterSpacing" type="number" min="-10" max="30" />
@@ -166,6 +180,38 @@ function clampLineHeight(value) {
             {{ item.label }}
           </option>
         </select>
+      </label>
+    </div>
+
+    <div class="toolbar-group field-group">
+      <label>
+        Editor width
+        <input v-model.number="editorBoxState.width" type="number" min="120" step="1" />
+      </label>
+
+      <label>
+        Editor height
+        <input v-model.number="editorBoxState.height" type="number" min="120" step="1" />
+      </label>
+
+      <label>
+        Padding top
+        <input v-model.number="editorBoxState.paddingTop" type="number" min="0" step="1" />
+      </label>
+
+      <label>
+        Padding right
+        <input v-model.number="editorBoxState.paddingRight" type="number" min="0" step="1" />
+      </label>
+
+      <label>
+        Padding bottom
+        <input v-model.number="editorBoxState.paddingBottom" type="number" min="0" step="1" />
+      </label>
+
+      <label>
+        Padding left
+        <input v-model.number="editorBoxState.paddingLeft" type="number" min="0" step="1" />
       </label>
     </div>
   </div>

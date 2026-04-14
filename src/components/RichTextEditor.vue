@@ -2,7 +2,14 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import ToolbarPanel from './ToolbarPanel.vue'
 import { saveRange, getRange, setRange } from '../composables/useSelection'
-import { DEFAULT_STYLE_STATE, styleState, styleToCss } from '../composables/useStyle'
+import {
+  DEFAULT_EDITOR_BOX_STATE,
+  DEFAULT_STYLE_STATE,
+  editorBoxState,
+  resolveFontFamily,
+  styleState,
+  styleToCss,
+} from '../composables/useStyle'
 import { normalize } from '../utils/normalize'
 
 const editorRef = ref(null)
@@ -11,6 +18,15 @@ const isSyncingToolbar = ref(false)
 const editorStyle = computed(() => ({
   textAlign: styleState.textAlign,
   alignItems: styleState.verticalAlign,
+}))
+
+const editorBoxStyle = computed(() => ({
+  width: `${normalizeDimension(editorBoxState.width, DEFAULT_EDITOR_BOX_STATE.width)}px`,
+  height: `${normalizeDimension(editorBoxState.height, DEFAULT_EDITOR_BOX_STATE.height)}px`,
+  paddingTop: `${normalizeSpacing(editorBoxState.paddingTop, DEFAULT_EDITOR_BOX_STATE.paddingTop)}px`,
+  paddingRight: `${normalizeSpacing(editorBoxState.paddingRight, DEFAULT_EDITOR_BOX_STATE.paddingRight)}px`,
+  paddingBottom: `${normalizeSpacing(editorBoxState.paddingBottom, DEFAULT_EDITOR_BOX_STATE.paddingBottom)}px`,
+  paddingLeft: `${normalizeSpacing(editorBoxState.paddingLeft, DEFAULT_EDITOR_BOX_STATE.paddingLeft)}px`,
 }))
 
 function saveSelection() {
@@ -78,6 +94,7 @@ function syncToolbarFromSelection() {
 
   patchStyleState({
     fontSize: Math.round(parsePixelValue(computedStyle.fontSize, DEFAULT_STYLE_STATE.fontSize)),
+    fontFamily: resolveFontFamily(computedStyle.fontFamily),
     color: parseColorValue(computedStyle.color, DEFAULT_STYLE_STATE.color),
     background: parseColorValue(computedStyle.backgroundColor, DEFAULT_STYLE_STATE.background),
     bold: isBoldWeight(computedStyle.fontWeight),
@@ -292,6 +309,24 @@ function toHex(value) {
   return value.toString(16).padStart(2, '0')
 }
 
+function normalizeDimension(value, fallback) {
+  const number = Number.parseFloat(value)
+  if (!Number.isFinite(number)) {
+    return fallback
+  }
+
+  return Math.max(120, Math.round(number))
+}
+
+function normalizeSpacing(value, fallback) {
+  const number = Number.parseFloat(value)
+  if (!Number.isFinite(number)) {
+    return fallback
+  }
+
+  return Math.max(0, Math.round(number))
+}
+
 watch(
   styleState,
   () => {
@@ -307,7 +342,7 @@ watch(
 
 <template>
   <main class="editor-shell">
-    <section class="intro-card">
+    <!-- <section class="intro-card">
       <p class="eyebrow">Vue3 Minimal Editor</p>
       <h1>contenteditable + Range + normalize</h1>
       <p class="intro-copy">
@@ -315,7 +350,7 @@ watch(
         <code>span</code> and <code>br</code>, then use selection restore, style state, and
         a normalize pass to keep the DOM predictable.
       </p>
-    </section>
+    </section> -->
 
     <section class="workspace-card">
       <ToolbarPanel />
@@ -324,6 +359,7 @@ watch(
         <div
           ref="editorRef"
           class="editor"
+          :style="editorBoxStyle"
           contenteditable="true"
           spellcheck="false"
           @mouseup="saveSelection"
@@ -341,7 +377,7 @@ watch(
 
 <style scoped>
 .editor-shell {
-  width: min(1120px, calc(100vw - 32px));
+  width: 1200px;
   margin: 0 auto;
   padding: 48px 0 56px;
 }
@@ -403,11 +439,13 @@ code {
     linear-gradient(rgba(229, 236, 246, 0.82), rgba(229, 236, 246, 0.82)),
     linear-gradient(90deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.95));
   display: flex;
+  justify-content: center;
 }
 
 .editor {
-  width: 100%;
-  min-height: 320px;
+  width: 960px;
+  height: 540px;
+  overflow: auto;
   padding: 20px 24px;
   border-radius: 20px;
   border: 1px solid rgba(24, 33, 47, 0.08);
@@ -417,6 +455,31 @@ code {
   word-break: break-word;
   font-size: 24px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.editor::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.editor:hover {
+  scrollbar-width: thin;
+}
+
+.editor:hover::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.editor:hover::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(24, 33, 47, 0.28);
+}
+
+.editor:hover::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .editor :deep([data-selection-preview='true']) {
