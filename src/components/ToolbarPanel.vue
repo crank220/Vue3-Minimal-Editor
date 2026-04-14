@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { FONT_FAMILY_OPTIONS, editorBoxState, styleState } from '../composables/useStyle'
+import { FONT_FAMILY_OPTIONS, editorBoxState, previewState, styleState } from '../composables/useStyle'
 
 const fontSizes = [16, 20, 24, 28, 32, 40, 48]
 const alignments = [
@@ -19,6 +19,26 @@ const strokePositions = [
   { label: 'Center', value: 'center' },
   { label: 'Outside', value: 'outside' },
 ]
+const previewFormats = [
+  { label: 'Multiline', value: 'multiline' },
+  { label: 'Single line', value: 'singleline' },
+]
+const pageTransitionOptions = [
+  { label: '100ms', value: 100 },
+  { label: '200ms', value: 200 },
+  { label: '300ms', value: 300 },
+  { label: '400ms', value: 400 },
+  { label: '500ms', value: 500 },
+  { label: '700ms', value: 700 },
+  { label: '1s', value: 1000 },
+  { label: '2s', value: 2000 },
+]
+const singleLineModes = [
+  { label: 'Static', value: 'static' },
+  { label: 'Move left', value: 'left' },
+  { label: 'Move right', value: 'right' },
+]
+const singleLineSpeedOptions = [1, 2, 3, 4, 5, 6, 7, 8, 9]
 const lineHeightPresets = [1, 1.2, 1.5, 1.8, 2, 2.4]
 
 const backgroundValue = computed({
@@ -214,6 +234,64 @@ function clampLineHeight(value) {
         <input v-model.number="editorBoxState.paddingLeft" type="number" min="0" step="1" />
       </label>
     </div>
+
+    <div class="toolbar-group field-group">
+      <label>
+        Preview format
+        <select v-model="previewState.format">
+          <option v-for="item in previewFormats" :key="item.value" :value="item.value">
+            {{ item.label }}
+          </option>
+        </select>
+      </label>
+
+      <template v-if="previewState.format === 'multiline'">
+        <label>
+          Page transition
+          <select v-model.number="previewState.pageTransitionMs">
+            <option v-for="item in pageTransitionOptions" :key="item.value" :value="item.value">
+              {{ item.label }}
+            </option>
+          </select>
+        </label>
+
+        <label>
+          Page stay (s)
+          <input
+            v-model.number="previewState.pageStaySeconds"
+            type="number"
+            min="1"
+            max="9999"
+            step="1"
+          />
+        </label>
+      </template>
+
+      <template v-else>
+        <label>
+          Single line mode
+          <select v-model="previewState.singleLineMode">
+            <option v-for="item in singleLineModes" :key="item.value" :value="item.value">
+              {{ item.label }}
+            </option>
+          </select>
+        </label>
+
+        <label>
+          Speed
+          <select v-model.number="previewState.singleLineSpeed">
+            <option v-for="speed in singleLineSpeedOptions" :key="speed" :value="speed">
+              {{ speed }}
+            </option>
+          </select>
+        </label>
+
+        <label class="toggle-label">
+          Loop seamlessly
+          <input v-model="previewState.singleLineSeamless" type="checkbox" />
+        </label>
+      </template>
+    </div>
   </div>
 </template>
 
@@ -284,8 +362,18 @@ input[type='color'] {
   padding: 4px;
 }
 
+input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+
 .line-height-control {
   min-width: 220px;
+}
+
+.toggle-label {
+  align-content: center;
 }
 
 .field-heading {

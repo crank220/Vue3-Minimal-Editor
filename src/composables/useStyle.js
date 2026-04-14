@@ -79,12 +79,25 @@ export const DEFAULT_EDITOR_BOX_STATE = {
   paddingLeft: 24,
 }
 
+export const DEFAULT_PREVIEW_STATE = {
+  format: 'multiline',
+  pageTransitionMs: 100,
+  pageStaySeconds: 10,
+  singleLineMode: 'static',
+  singleLineSpeed: 3,
+  singleLineSeamless: true,
+}
+
 export const styleState = reactive({
   ...DEFAULT_STYLE_STATE,
 })
 
 export const editorBoxState = reactive({
   ...DEFAULT_EDITOR_BOX_STATE,
+})
+
+export const previewState = reactive({
+  ...DEFAULT_PREVIEW_STATE,
 })
 
 export function styleToCss(state) {

@@ -1,11 +1,14 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import PreviewPanel from './PreviewPanel.vue'
 import ToolbarPanel from './ToolbarPanel.vue'
 import { saveRange, getRange, setRange } from '../composables/useSelection'
 import {
   DEFAULT_EDITOR_BOX_STATE,
+  DEFAULT_PREVIEW_STATE,
   DEFAULT_STYLE_STATE,
   editorBoxState,
+  previewState,
   resolveFontFamily,
   styleState,
   styleToCss,
@@ -14,25 +17,39 @@ import { normalize } from '../utils/normalize'
 
 const editorRef = ref(null)
 const isSyncingToolbar = ref(false)
+const previewSource = ref({
+  html: '',
+  singleLineHtml: '',
+})
 
 const editorStyle = computed(() => ({
   textAlign: styleState.textAlign,
   alignItems: styleState.verticalAlign,
 }))
 
+const editorBoxMetrics = computed(() => ({
+  width: normalizeDimension(editorBoxState.width, DEFAULT_EDITOR_BOX_STATE.width),
+  height: normalizeDimension(editorBoxState.height, DEFAULT_EDITOR_BOX_STATE.height),
+  paddingTop: normalizeSpacing(editorBoxState.paddingTop, DEFAULT_EDITOR_BOX_STATE.paddingTop),
+  paddingRight: normalizeSpacing(editorBoxState.paddingRight, DEFAULT_EDITOR_BOX_STATE.paddingRight),
+  paddingBottom: normalizeSpacing(editorBoxState.paddingBottom, DEFAULT_EDITOR_BOX_STATE.paddingBottom),
+  paddingLeft: normalizeSpacing(editorBoxState.paddingLeft, DEFAULT_EDITOR_BOX_STATE.paddingLeft),
+}))
+
 const editorBoxStyle = computed(() => ({
-  width: `${normalizeDimension(editorBoxState.width, DEFAULT_EDITOR_BOX_STATE.width)}px`,
-  height: `${normalizeDimension(editorBoxState.height, DEFAULT_EDITOR_BOX_STATE.height)}px`,
-  paddingTop: `${normalizeSpacing(editorBoxState.paddingTop, DEFAULT_EDITOR_BOX_STATE.paddingTop)}px`,
-  paddingRight: `${normalizeSpacing(editorBoxState.paddingRight, DEFAULT_EDITOR_BOX_STATE.paddingRight)}px`,
-  paddingBottom: `${normalizeSpacing(editorBoxState.paddingBottom, DEFAULT_EDITOR_BOX_STATE.paddingBottom)}px`,
-  paddingLeft: `${normalizeSpacing(editorBoxState.paddingLeft, DEFAULT_EDITOR_BOX_STATE.paddingLeft)}px`,
+  width: `${editorBoxMetrics.value.width}px`,
+  height: `${editorBoxMetrics.value.height}px`,
+  paddingTop: `${editorBoxMetrics.value.paddingTop}px`,
+  paddingRight: `${editorBoxMetrics.value.paddingRight}px`,
+  paddingBottom: `${editorBoxMetrics.value.paddingBottom}px`,
+  paddingLeft: `${editorBoxMetrics.value.paddingLeft}px`,
 }))
 
 function saveSelection() {
   clearSelectionPreview()
   saveRange(editorRef.value)
   syncToolbarFromSelection()
+  syncPreviewSource()
 }
 
 function applyStyleToSelection() {
@@ -64,6 +81,7 @@ function applyStyleToSelection() {
     if (editorRef.value) {
       normalize(editorRef.value)
       syncToolbarFromSelection()
+      syncPreviewSource()
     }
   })
 }
@@ -74,6 +92,7 @@ function onInput() {
       normalize(editorRef.value)
       saveRange(editorRef.value)
       syncToolbarFromSelection()
+      syncPreviewSource()
     }
   })
 }
@@ -309,6 +328,25 @@ function toHex(value) {
   return value.toString(16).padStart(2, '0')
 }
 
+function syncPreviewSource() {
+  if (!editorRef.value) {
+    return
+  }
+
+  const html = sanitizePreviewHtml(editorRef.value.innerHTML)
+
+  previewSource.value = {
+    html,
+    singleLineHtml: html.replace(/<br\s*\/?>/gi, '<span> </span>'),
+  }
+}
+
+function sanitizePreviewHtml(value) {
+  return String(value ?? '')
+    .replace(/\sdata-selection-preview="true"/g, '')
+    .replace(/\sdata-selection-preview='true'/g, '')
+}
+
 function normalizeDimension(value, fallback) {
   const number = Number.parseFloat(value)
   if (!Number.isFinite(number)) {
@@ -326,6 +364,25 @@ function normalizeSpacing(value, fallback) {
 
   return Math.max(0, Math.round(number))
 }
+
+onMounted(() => {
+  syncPreviewSource()
+})
+
+watch(
+  previewState,
+  () => {
+    previewState.pageStaySeconds = Math.min(
+      9999,
+      Math.max(1, Number.parseInt(previewState.pageStaySeconds, 10) || DEFAULT_PREVIEW_STATE.pageStaySeconds),
+    )
+    previewState.singleLineSpeed = Math.min(
+      9,
+      Math.max(1, Number.parseInt(previewState.singleLineSpeed, 10) || DEFAULT_PREVIEW_STATE.singleLineSpeed),
+    )
+  },
+  { deep: true },
+)
 
 watch(
   styleState,
@@ -371,6 +428,14 @@ watch(
           colors, stroke, letter spacing, and line height instantly.
         </div>
       </div>
+
+      <PreviewPanel
+        :box-metrics="editorBoxMetrics"
+        :content-html="previewSource.html"
+        :single-line-html="previewSource.singleLineHtml"
+        :preview-config="previewState"
+        :text-align="styleState.textAlign"
+      />
     </section>
   </main>
 </template>
