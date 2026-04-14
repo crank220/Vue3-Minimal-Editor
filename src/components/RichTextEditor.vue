@@ -16,6 +16,7 @@ import {
 import { normalize } from '../utils/normalize'
 
 const editorRef = ref(null)
+const previewPanelRef = ref(null)
 const isSyncingToolbar = ref(false)
 const previewSource = ref({
   html: '',
@@ -409,6 +410,10 @@ function normalizeSpacing(value, fallback) {
   return Math.max(0, Math.round(number))
 }
 
+function requestCutImages() {
+  previewPanelRef.value?.generateCutImages?.()
+}
+
 onMounted(() => {
   syncPreviewSource()
   syncEditorScrollState()
@@ -420,6 +425,13 @@ watch(
     previewState.pageStaySeconds = Math.min(
       9999,
       Math.max(1, Number.parseInt(previewState.pageStaySeconds, 10) || DEFAULT_PREVIEW_STATE.pageStaySeconds),
+    )
+    previewState.cutImageWidth = Math.min(
+      65536,
+      Math.max(
+        1,
+        Number.parseInt(previewState.cutImageWidth, 10) || editorBoxState.width || DEFAULT_EDITOR_BOX_STATE.width,
+      ),
     )
     previewState.singleLineSpeed = Math.min(
       9,
@@ -465,7 +477,7 @@ watch(
     </section> -->
 
     <section class="workspace-card">
-      <ToolbarPanel />
+      <ToolbarPanel @cut-images="requestCutImages" />
 
       <div class="editor-stage" :style="editorStyle">
         <div class="editor-panel" :style="{ width: editorBoxStyle.width, height: editorBoxStyle.height }">
@@ -492,6 +504,7 @@ watch(
       </div>
 
       <PreviewPanel
+        ref="previewPanelRef"
         :box-metrics="editorBoxMetrics"
         :content-html="previewSource.html"
         :single-line-html="previewSource.singleLineHtml"

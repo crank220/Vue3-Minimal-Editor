@@ -2,6 +2,8 @@
 import { computed } from 'vue'
 import { FONT_FAMILY_OPTIONS, editorBoxState, previewState, styleState } from '../composables/useStyle'
 
+const emit = defineEmits(['cut-images'])
+
 const fontSizes = [16, 20, 24, 28, 32, 40, 48]
 const alignments = [
   { label: 'Left', value: 'left' },
@@ -289,6 +291,17 @@ function clampLineHeight(value) {
 
       <template v-else>
         <label>
+          Cut image width
+          <input
+            v-model.number="previewState.cutImageWidth"
+            type="number"
+            min="1"
+            max="65536"
+            step="1"
+          />
+        </label>
+
+        <label>
           Single line mode
           <select v-model="previewState.singleLineMode">
             <option v-for="item in singleLineModes" :key="item.value" :value="item.value">
@@ -311,6 +324,8 @@ function clampLineHeight(value) {
           <input v-model="previewState.singleLineSeamless" type="checkbox" />
         </label>
       </template>
+
+      <button type="button" @mousedown.prevent @click="emit('cut-images')">Cut PNG</button>
     </div>
   </div>
 </template>

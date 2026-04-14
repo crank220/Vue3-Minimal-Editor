@@ -84,6 +84,7 @@ export const DEFAULT_PREVIEW_STATE = {
   pageTransitionDirection: 'static',
   pageTransitionMs: 100,
   pageStaySeconds: 10,
+  cutImageWidth: DEFAULT_EDITOR_BOX_STATE.width,
   singleLineMode: 'static',
   singleLineSpeed: 3,
   singleLineSeamless: true,
