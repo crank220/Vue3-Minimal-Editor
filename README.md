@@ -1,4 +1,4 @@
-# Vue3 Minimal Editor
+# 前端文本引擎
 
 一个基于 `Vue 3 + Vite` 的文本编辑、实时预览、分页播放与 PNG 切图工具。
 
