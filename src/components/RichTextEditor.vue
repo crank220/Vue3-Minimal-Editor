@@ -20,8 +20,9 @@ import {
 } from '../composables/useStyle'
 import { normalize } from '../utils/normalize'
 
-// 编辑区 DOM、预览组件实例以及若干联动状态。
+// 编辑区滚动容器、可编辑内容根节点、预览组件实例以及若干联动状态。
 const editorRef = ref(null)
+const editorContentRef = ref(null)
 const previewPanelRef = ref(null)
 const isSyncingToolbar = ref(false)
 const previewSource = ref({
@@ -33,12 +34,6 @@ const editorScrollState = ref({
   scrollHeight: 0,
   scrollTop: 0,
 })
-
-// 编辑舞台的对齐方式由共享样式状态驱动，用于控制编辑区在容器中的停靠位置。
-const editorStyle = computed(() => ({
-  textAlign: styleState.textAlign,
-  alignItems: styleState.verticalAlign,
-}))
 
 // 将输入状态标准化为可直接用于布局计算的数字盒模型。
 const editorBoxMetrics = computed(() => ({
@@ -58,6 +53,10 @@ const editorBoxStyle = computed(() => ({
   paddingRight: `${editorBoxMetrics.value.paddingRight}px`,
   paddingBottom: `${editorBoxMetrics.value.paddingBottom}px`,
   paddingLeft: `${editorBoxMetrics.value.paddingLeft}px`,
+  textAlign: styleState.textAlign,
+  justifyContent: hasEditorScroll.value
+    ? 'flex-start'
+    : normalizeVerticalAlign(styleState.verticalAlign),
 }))
 
 // 判断编辑区当前是否真的需要显示滚动指示器。
@@ -90,7 +89,7 @@ function saveSelection() {
   // 在鼠标抬起、键盘选择或重新聚焦后缓存选区。
   // 同时刷新工具栏回显、预览 HTML 和滚动状态。
   clearSelectionPreview()
-  saveRange(editorRef.value)
+  saveRange(editorContentRef.value)
   syncToolbarFromSelection()
   syncPreviewSource()
   syncEditorScrollState()
@@ -125,8 +124,8 @@ function applyStyleToSelection() {
   setSelectionPreview(span)
 
   nextTick(() => {
-    if (editorRef.value) {
-      normalize(editorRef.value)
+    if (editorContentRef.value) {
+      normalize(editorContentRef.value)
       syncToolbarFromSelection()
       syncPreviewSource()
       syncEditorScrollState()
@@ -140,9 +139,9 @@ function onInput() {
   // 2. 重新缓存选区；
   // 3. 同步工具栏与预览数据。
   nextTick(() => {
-    if (editorRef.value) {
-      normalize(editorRef.value)
-      saveRange(editorRef.value)
+    if (editorContentRef.value) {
+      normalize(editorContentRef.value)
+      saveRange(editorContentRef.value)
       syncToolbarFromSelection()
       syncPreviewSource()
       syncEditorScrollState()
@@ -153,11 +152,11 @@ function onInput() {
 function syncToolbarFromSelection() {
   // 从当前选区命中的节点反向读取计算样式，并写回工具栏状态。
   const range = getRange()
-  if (!editorRef.value || !range) {
+  if (!editorContentRef.value || !range) {
     return
   }
 
-  const target = getSelectionStyleTarget(range, editorRef.value)
+  const target = getSelectionStyleTarget(range, editorContentRef.value)
   if (!target) {
     return
   }
@@ -271,7 +270,7 @@ function unwrapFragmentSpans(fragment) {
 
 function clearSelectionPreview() {
   // 清理上一次为了“保持选中感”而打上的临时标记。
-  editorRef.value
+  editorContentRef.value
     ?.querySelectorAll('[data-selection-preview="true"]')
     .forEach((element) => element.removeAttribute('data-selection-preview'))
 }
@@ -405,11 +404,11 @@ function toHex(value) {
 function syncPreviewSource() {
   // 将编辑区 HTML 同步给预览区。
   // 单行预览需要把换行转成空格占位，避免真正换行。
-  if (!editorRef.value) {
+  if (!editorContentRef.value) {
     return
   }
 
-  const html = sanitizePreviewHtml(editorRef.value.innerHTML)
+  const html = sanitizePreviewHtml(editorContentRef.value.innerHTML)
 
   previewSource.value = {
     html,
@@ -435,6 +434,14 @@ function syncEditorScrollState() {
     scrollHeight: editorRef.value.scrollHeight,
     scrollTop: editorRef.value.scrollTop,
   }
+}
+
+function normalizeVerticalAlign(value) {
+  if (value === 'flex-start' || value === 'center' || value === 'flex-end') {
+    return value
+  }
+
+  return 'center'
 }
 
 function normalizeDimension(value, fallback) {
@@ -534,20 +541,24 @@ watch(
       <ToolbarPanel @cut-images="requestCutImages" />
 
       <!-- 编辑舞台负责承载编辑区本体。 -->
-      <div class="editor-stage" :style="editorStyle">
+      <div class="editor-stage">
         <div class="editor-panel" :style="{ width: editorBoxStyle.width, height: editorBoxStyle.height }">
           <div
             ref="editorRef"
             class="editor"
             :style="editorBoxStyle"
-            contenteditable="true"
-            spellcheck="false"
-            @mouseup="saveSelection"
-            @keyup="saveSelection"
-            @focus="saveSelection"
-            @input="onInput"
             @scroll="syncEditorScrollState"
           >
+            <div
+              ref="editorContentRef"
+              class="editor-content"
+              contenteditable="true"
+              spellcheck="false"
+              @mouseup="saveSelection"
+              @keyup="saveSelection"
+              @focus="saveSelection"
+              @input="onInput"
+            >
 一个基于 `Vue 3 + Vite` 的文本编辑、实时预览、分页播放与 PNG 切图工具。
 
 这个项目不是通用型富文本编辑器，而是一个“排版可控、预览可控、切图可控”的前端文本引擎。它直接建立在浏览器原生能力之上：`contenteditable`、`Range`、`Selection`、DOM 归一化、Canvas 渲染，不依赖 Quill、Slate、Tiptap 等第三方编辑器框架。
@@ -573,6 +584,7 @@ watch(
 8. 单行模式支持静态、左移、右移、无缝循环。
 9. 支持按预览结果生成 PNG，并在页面下方查看切图预览。
 10. 支持自定义编辑区悬浮滚动条，鼠标移入时显示，且不挤压内容。
+            </div>
           </div>
 
           <div v-if="hasEditorScroll" class="editor-scrollbar">
@@ -672,18 +684,25 @@ code {
 
 /* 真正的 contenteditable 区域。 */
 .editor {
+  box-sizing: border-box;
   overflow: auto;
-  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
   border-radius: 20px;
   border: 1px solid rgba(24, 33, 47, 0.08);
   background: white;
-  outline: none;
-  white-space: pre-wrap;
-  word-break: break-word;
   font-size: 24px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
   scrollbar-width: none;
   -ms-overflow-style: none;
+}
+
+.editor-content {
+  width: 100%;
+  min-height: fit-content;
+  outline: none;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* 隐藏浏览器原生滚动条，由自定义悬浮滚动条代替。 */
@@ -725,7 +744,7 @@ code {
 }
 
 /* 编辑区聚焦态。 */
-.editor:focus {
+.editor:focus-within {
   border-color: rgba(54, 107, 255, 0.35);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.8),
@@ -759,7 +778,6 @@ code {
 
   .editor {
     min-height: 260px;
-    padding: 18px;
     font-size: 20px;
   }
 }

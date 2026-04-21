@@ -31,7 +31,7 @@ const props = defineProps({
     type: String,
     default: 'left',
   },
-  // 垂直对齐方式，用于单行模式和多行最后一页的垂直分布。
+  // 垂直对齐方式，用于单行模式和多行分页的逐页垂直分布。
   verticalAlign: {
     type: String,
     default: 'center',
@@ -46,6 +46,17 @@ const singleMeasureRef = ref(null)
 const currentPage = ref(0)
 const hasTruncatedPages = ref(false)
 const multilinePageCount = ref(1)
+const multilinePages = ref([
+  {
+    pageIndex: 0,
+    startTop: 0,
+    contentHeight: 0,
+    offsetY: 0,
+    firstGlyphIndex: -1,
+    lastGlyphIndex: -1,
+  },
+])
+const multilineGlyphs = ref([])
 
 // 切图结果与切图过程状态。
 const cutImagePreviews = ref([])
@@ -109,6 +120,14 @@ const previewPageStyle = computed(() => ({
   height: `${props.boxMetrics.height}px`,
 }))
 
+const multilineContentWidth = computed(() =>
+  Math.max(1, props.boxMetrics.width - props.boxMetrics.paddingLeft - props.boxMetrics.paddingRight),
+)
+
+const multilineContentHeight = computed(() =>
+  Math.max(1, props.boxMetrics.height - props.boxMetrics.paddingTop - props.boxMetrics.paddingBottom),
+)
+
 // 单行预览视口样式：完整保留四向 padding，并在容器层处理垂直对齐。
 const singleLineViewportStyle = computed(() => ({
   ...previewPageStyle.value,
@@ -122,12 +141,7 @@ const singleLineViewportStyle = computed(() => ({
 
 // 多行连续流样式：用于真实分页视图和隐藏测量层，确保两者版式来源完全一致。
 const multilineFlowStyle = computed(() => ({
-  width: `${props.boxMetrics.width}px`,
-  minHeight: `${props.boxMetrics.height}px`,
-  paddingTop: `${props.boxMetrics.paddingTop}px`,
-  paddingRight: `${props.boxMetrics.paddingRight}px`,
-  paddingBottom: `${props.boxMetrics.paddingBottom}px`,
-  paddingLeft: `${props.boxMetrics.paddingLeft}px`,
+  width: `${multilineContentWidth.value}px`,
   textAlign: props.textAlign,
 }))
 
@@ -136,7 +150,7 @@ const safeContentHtml = computed(() => props.contentHtml || '&nbsp;')
 const safeSingleLineHtml = computed(() => props.singleLineHtml || '&nbsp;')
 
 // 多行页码与切图宽度派生值。
-const visiblePageCount = computed(() => multilinePageCount.value)
+const visiblePageCount = computed(() => multilinePages.value.length)
 const multilinePageText = computed(() => `${Math.min(currentPage.value + 1, visiblePageCount.value)} / ${visiblePageCount.value}`)
 const effectiveCutImageWidth = computed(() =>
   clampCutImageWidth(props.previewConfig.cutImageWidth || props.boxMetrics.width),
@@ -146,28 +160,36 @@ const effectiveCutImageWidth = computed(() =>
 // 静止时只渲染当前页；动画时同时渲染“上一页”和“目标页”，保证 transition 连续执行。
 const activeMultilinePages = computed(() => {
   if (!transitionState.value.active) {
+    const page = getMultilinePageByIndex(currentPage.value)
+
     return [
       {
-        key: `page-${currentPage.value}`,
-        pageIndex: currentPage.value,
+        key: `page-${page.pageIndex}`,
+        pageIndex: page.pageIndex,
         layerStyle: getTransitionLayerStyle('idle'),
-        flowStyle: getMultilineSliceStyle(currentPage.value),
+        windowStyle: getMultilineWindowStyle(page),
+        flowStyle: getMultilineSliceStyle(page),
       },
     ]
   }
 
+  const fromPage = getMultilinePageByIndex(transitionState.value.from)
+  const toPage = getMultilinePageByIndex(transitionState.value.to)
+
   return [
     {
       key: `from-${transitionState.value.from}-${transitionState.value.to}`,
-      pageIndex: transitionState.value.from,
+      pageIndex: fromPage.pageIndex,
       layerStyle: getTransitionLayerStyle('from'),
-      flowStyle: getMultilineSliceStyle(transitionState.value.from),
+      windowStyle: getMultilineWindowStyle(fromPage),
+      flowStyle: getMultilineSliceStyle(fromPage),
     },
     {
       key: `to-${transitionState.value.from}-${transitionState.value.to}`,
-      pageIndex: transitionState.value.to,
+      pageIndex: toPage.pageIndex,
       layerStyle: getTransitionLayerStyle('to'),
-      flowStyle: getMultilineSliceStyle(transitionState.value.to),
+      windowStyle: getMultilineWindowStyle(toPage),
+      flowStyle: getMultilineSliceStyle(toPage),
     },
   ]
 })
@@ -253,19 +275,27 @@ defineExpose({
 })
 
 function paginateMultilineContent() {
-  // 通过隐藏测量层的 scrollHeight 计算总页数。
-  // 这里不会修改真实内容，只负责得出“当前内容在当前尺寸下应该分成几页”。
+  // 多行分页不再用固定页高硬切，而是先提取真实行盒，再按整行装入每一页。
+  // 这样可以保证：
+  // 1. 文字不会跨页；
+  // 2. 每页都能独立应用 vertical align；
+  // 3. 预览与切图共享同一份分页结果。
   if (!multilineMeasureRef.value) {
+    multilinePages.value = [createEmptyMultilinePage()]
+    multilineGlyphs.value = []
     multilinePageCount.value = 1
     hasTruncatedPages.value = false
     return
   }
 
-  const totalHeight = Math.max(props.boxMetrics.height, Math.ceil(multilineMeasureRef.value.scrollHeight))
-  const rawPageCount = Math.max(1, Math.ceil(totalHeight / Math.max(1, props.boxMetrics.height)))
+  const glyphs = collectMultilineGlyphs(multilineMeasureRef.value)
+  const lines = groupGlyphsIntoLines(glyphs)
+  const { pages, truncated } = paginateMultilineLines(lines)
 
-  multilinePageCount.value = Math.min(10, rawPageCount)
-  hasTruncatedPages.value = rawPageCount > 10
+  multilineGlyphs.value = glyphs
+  multilinePages.value = pages
+  multilinePageCount.value = pages.length
+  hasTruncatedPages.value = truncated
 
   if (currentPage.value >= multilinePageCount.value) {
     currentPage.value = 0
@@ -579,12 +609,130 @@ function getDirectionVector(direction) {
   return { x: '-100%', y: '0%' }
 }
 
-// 多行页本质上是同一份连续内容的不同纵向切片。
-// 通过 translateY 按页高偏移，保证预览与测量来源完全一致。
-function getMultilineSliceStyle(pageIndex) {
+function createEmptyMultilinePage(pageIndex = 0) {
+  return {
+    pageIndex,
+    startTop: 0,
+    contentHeight: 0,
+    offsetY: getVerticalOffset(normalizedVerticalAlign.value, multilineContentHeight.value, 0),
+    firstGlyphIndex: -1,
+    lastGlyphIndex: -1,
+  }
+}
+
+function getMultilinePageByIndex(pageIndex) {
+  return multilinePages.value[pageIndex] ?? createEmptyMultilinePage(pageIndex)
+}
+
+function getMultilineWindowStyle(page) {
+  return {
+    width: `${multilineContentWidth.value}px`,
+    height: `${Math.max(0, page.contentHeight)}px`,
+    top: `${props.boxMetrics.paddingTop + page.offsetY}px`,
+    left: `${props.boxMetrics.paddingLeft}px`,
+  }
+}
+
+// 多行页依旧复用同一份连续流，只是每页只截取“当前页所属的整行区间”。
+function getMultilineSliceStyle(page) {
   return {
     ...multilineFlowStyle.value,
-    transform: `translateY(-${pageIndex * props.boxMetrics.height}px)`,
+    transform: `translateY(-${page.startTop}px)`,
+  }
+}
+
+function groupGlyphsIntoLines(glyphs) {
+  if (!glyphs.length) {
+    return []
+  }
+
+  const lines = []
+  let currentLine = null
+
+  glyphs.forEach((glyph, glyphIndex) => {
+    if (!currentLine) {
+      currentLine = createLineMetrics(glyph, glyphIndex, 0)
+      glyph.lineIndex = 0
+      return
+    }
+
+    if (glyph.top <= currentLine.bottom - 0.5) {
+      currentLine.top = Math.min(currentLine.top, glyph.top)
+      currentLine.bottom = Math.max(currentLine.bottom, glyph.bottom)
+      currentLine.height = currentLine.bottom - currentLine.top
+      currentLine.lastGlyphIndex = glyphIndex
+      glyph.lineIndex = currentLine.lineIndex
+      return
+    }
+
+    lines.push(currentLine)
+    currentLine = createLineMetrics(glyph, glyphIndex, lines.length)
+    glyph.lineIndex = currentLine.lineIndex
+  })
+
+  if (currentLine) {
+    lines.push(currentLine)
+  }
+
+  return lines
+}
+
+function createLineMetrics(glyph, glyphIndex, lineIndex) {
+  return {
+    lineIndex,
+    top: glyph.top,
+    bottom: glyph.bottom,
+    height: glyph.bottom - glyph.top,
+    firstGlyphIndex: glyphIndex,
+    lastGlyphIndex: glyphIndex,
+  }
+}
+
+function paginateMultilineLines(lines) {
+  if (!lines.length) {
+    return {
+      pages: [createEmptyMultilinePage()],
+      truncated: false,
+    }
+  }
+
+  const pages = []
+  const availableHeight = multilineContentHeight.value
+  let lineIndex = 0
+
+  while (lineIndex < lines.length && pages.length < 10) {
+    const startLineIndex = lineIndex
+    const startTop = lines[startLineIndex].top
+    let endLineIndex = startLineIndex
+
+    while (endLineIndex + 1 < lines.length) {
+      const nextLine = lines[endLineIndex + 1]
+      const nextHeight = nextLine.bottom - startTop
+
+      if (nextHeight > availableHeight) {
+        break
+      }
+
+      endLineIndex += 1
+    }
+
+    const contentHeight = Math.max(0, lines[endLineIndex].bottom - startTop)
+
+    pages.push({
+      pageIndex: pages.length,
+      startTop,
+      contentHeight,
+      offsetY: getVerticalOffset(normalizedVerticalAlign.value, availableHeight, contentHeight),
+      firstGlyphIndex: lines[startLineIndex].firstGlyphIndex,
+      lastGlyphIndex: lines[endLineIndex].lastGlyphIndex,
+    })
+
+    lineIndex = endLineIndex + 1
+  }
+
+  return {
+    pages: pages.length ? pages : [createEmptyMultilinePage()],
+    truncated: lineIndex < lines.length,
   }
 }
 
@@ -600,6 +748,12 @@ async function generateCutImages() {
   try {
     await nextTick()
 
+    if (props.previewConfig.format === 'multiline') {
+      paginateMultilineContent()
+    } else {
+      measureSingleLineBounds()
+    }
+
     cutImagePreviews.value =
       props.previewConfig.format === 'multiline'
         ? await buildMultilineCutImages()
@@ -614,26 +768,21 @@ async function generateCutImages() {
 }
 
 async function buildMultilineCutImages() {
-  // 多行模式直接基于隐藏测量层采集字形位置信息，然后按页高逐页裁出 PNG。
-  if (!multilineMeasureRef.value) {
-    return []
-  }
-
-  const glyphs = collectMultilineGlyphs(multilineMeasureRef.value)
+  // 多行模式直接复用当前分页结果，保证预览页和导出页共享同一套行边界与垂直对齐。
   const images = []
 
-  for (let index = 0; index < multilinePageCount.value; index += 1) {
+  multilinePages.value.forEach((page) => {
     const width = props.boxMetrics.width
     const height = props.boxMetrics.height
 
     images.push({
-      id: `page-${index + 1}`,
-      label: `Page ${index + 1}`,
+      id: `page-${page.pageIndex + 1}`,
+      label: `Page ${page.pageIndex + 1}`,
       width,
       height,
-      url: renderCanvasToPng(renderMultilineSliceToCanvas(width, height, index, glyphs)),
+      url: renderCanvasToPng(renderMultilineSliceToCanvas(width, height, page, multilineGlyphs.value)),
     })
-  }
+  })
 
   return images
 }
@@ -717,20 +866,18 @@ function renderSingleLineSliceToCanvas({ width, height, sliceStart, totalWidth, 
   return canvas
 }
 
-// 渲染多行某一页。这里只画落在当前页可视区间内的字形。
-function renderMultilineSliceToCanvas(width, height, pageIndex, glyphs) {
+// 渲染多行某一页。这里只画当前页所属的完整行集合，不再允许文字跨页。
+function renderMultilineSliceToCanvas(width, height, page, glyphs) {
   const canvas = createCanvas(width, height)
   const context = getCanvasContext(canvas)
-  const pageTop = pageIndex * height
-  const pageBottom = pageTop + height
 
-  glyphs.forEach((glyph) => {
-    if (glyph.bottom <= pageTop || glyph.top >= pageBottom) {
-      return
-    }
+  if (page.firstGlyphIndex < 0 || page.lastGlyphIndex < page.firstGlyphIndex) {
+    return canvas
+  }
 
-    drawResolvedGlyph(context, glyph, pageTop)
-  })
+  for (let index = page.firstGlyphIndex; index <= page.lastGlyphIndex; index += 1) {
+    drawResolvedGlyph(context, glyphs[index], page)
+  }
 
   return canvas
 }
@@ -925,9 +1072,14 @@ function drawLine(context, line, startX, lineTop, clip = null) {
 }
 
 // 多行切图使用的字形绘制入口。
-// 它会把“整篇文档中的绝对位置”转换成“当前页中的相对位置”。
-function drawResolvedGlyph(context, glyph, pageTop) {
-  const y = glyph.top - pageTop
+// 它会把“整篇文档中的绝对位置”转换成“当前页内容区中的相对位置”。
+function drawResolvedGlyph(context, glyph, page) {
+  if (!glyph) {
+    return
+  }
+
+  const x = props.boxMetrics.paddingLeft + glyph.x
+  const y = props.boxMetrics.paddingTop + page.offsetY + (glyph.top - page.startTop)
   const baseline =
     y + Math.max(0, (glyph.height - (glyph.style.ascent + glyph.style.descent)) / 2) + glyph.style.ascent
 
@@ -936,7 +1088,7 @@ function drawResolvedGlyph(context, glyph, pageTop) {
     style: glyph.style,
     width: glyph.width,
     advance: glyph.advance,
-  }, glyph.x, baseline, y, glyph.height)
+  }, x, baseline, y, glyph.height)
 }
 
 // 实际的单字符绘制函数。
@@ -1375,8 +1527,10 @@ function normalizeVerticalAlign(value) {
           class="preview-page preview-page-layer"
           :style="page.layerStyle"
         >
-          <div class="preview-page-flow" :style="page.flowStyle">
-            <div class="preview-page-copy" v-html="safeContentHtml" />
+          <div class="preview-page-window" :style="page.windowStyle">
+            <div class="preview-page-flow" :style="page.flowStyle">
+              <div class="preview-page-copy" v-html="safeContentHtml" />
+            </div>
           </div>
         </div>
       </div>
@@ -1387,11 +1541,15 @@ function normalizeVerticalAlign(value) {
         class="preview-page preview-flow-measure"
         :style="multilineFlowStyle"
         aria-hidden="true"
-        v-html="safeContentHtml"
-      />
+      >
+        <div class="preview-page-copy" v-html="safeContentHtml" />
+      </div>
 
       <p class="preview-note">
         Each page uses the current `Editor width`, `Editor height`, and all four padding values.
+      </p>
+      <p class="preview-note">
+        Multiline pages are packed by whole lines, and `Vertical align` is applied page by page.
       </p>
       <p class="preview-note">
         Maximum 10 pages are supported in multiline preview.
@@ -1581,6 +1739,12 @@ h2 {
   overflow: hidden;
   background: white;
   will-change: transform;
+}
+
+/* 每页内容区单独裁切，确保整页垂直对齐时仍然不会露出相邻页的文字。 */
+.preview-page-window {
+  position: absolute;
+  overflow: hidden;
 }
 
 /* 真实显示层与隐藏测量层必须共享完全一致的排版规则。 */
