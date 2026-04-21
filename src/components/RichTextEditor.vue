@@ -656,8 +656,8 @@ code {
 .editor-stage {
   min-height: 420px;
   margin-top: 18px;
-  padding: 24px;
-  border-radius: 24px;
+  padding: 20px;
+  border-radius: 20px;
   border: 1px dashed rgba(30, 41, 59, 0.18);
   background:
     linear-gradient(rgba(229, 236, 246, 0.82), rgba(229, 236, 246, 0.82)),
@@ -675,7 +675,6 @@ code {
   overflow: auto;
   padding: 20px 24px;
   border-radius: 20px;
-  border: 1px solid rgba(24, 33, 47, 0.08);
   background: white;
   outline: none;
   white-space: pre-wrap;

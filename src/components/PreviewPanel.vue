@@ -31,21 +31,21 @@ const props = defineProps({
     type: String,
     default: 'left',
   },
-  // 垂直对齐方式，用于单行模式和多行最后一页的垂直分布。
+  // 垂直对齐方式。单行模式和多行模式的每一页都会使用这项配置。
   verticalAlign: {
     type: String,
     default: 'center',
   },
 })
 
-// 隐藏测量层：多行用来计算分页高度，单行用来测量整条文字的实际宽度。
-const multilineMeasureRef = ref(null)
+// 单行模式仍然使用隐藏测量层读取真实滚动宽度。
 const singleMeasureRef = ref(null)
 
 // 当前页与多行分页状态。
 const currentPage = ref(0)
 const hasTruncatedPages = ref(false)
 const multilinePageCount = ref(1)
+const multilinePages = ref([])
 
 // 切图结果与切图过程状态。
 const cutImagePreviews = ref([])
@@ -109,6 +109,15 @@ const previewPageStyle = computed(() => ({
   height: `${props.boxMetrics.height}px`,
 }))
 
+// 多行分页使用的有效内容区尺寸。
+// 每一页都会在这块内容区内单独分页并单独执行垂直对齐。
+const multilineContentWidth = computed(() =>
+  Math.max(1, props.boxMetrics.width - props.boxMetrics.paddingLeft - props.boxMetrics.paddingRight),
+)
+const multilineContentHeight = computed(() =>
+  Math.max(1, props.boxMetrics.height - props.boxMetrics.paddingTop - props.boxMetrics.paddingBottom),
+)
+
 // 单行预览视口样式：完整保留四向 padding，并在容器层处理垂直对齐。
 const singleLineViewportStyle = computed(() => ({
   ...previewPageStyle.value,
@@ -120,15 +129,14 @@ const singleLineViewportStyle = computed(() => ({
   alignItems: normalizedVerticalAlign.value,
 }))
 
-// 多行连续流样式：用于真实分页视图和隐藏测量层，确保两者版式来源完全一致。
-const multilineFlowStyle = computed(() => ({
-  width: `${props.boxMetrics.width}px`,
-  minHeight: `${props.boxMetrics.height}px`,
+// 多行页面内容盒模型。每一页都使用同一套 padding，再由纵向对齐决定内容停靠位置。
+const multilinePageContentStyle = computed(() => ({
+  ...previewPageStyle.value,
   paddingTop: `${props.boxMetrics.paddingTop}px`,
   paddingRight: `${props.boxMetrics.paddingRight}px`,
   paddingBottom: `${props.boxMetrics.paddingBottom}px`,
   paddingLeft: `${props.boxMetrics.paddingLeft}px`,
-  textAlign: props.textAlign,
+  justifyContent: normalizedVerticalAlign.value,
 }))
 
 // 空内容时用不换行空格兜底，避免测量层高度和切图结果变成 0。
@@ -136,7 +144,7 @@ const safeContentHtml = computed(() => props.contentHtml || '&nbsp;')
 const safeSingleLineHtml = computed(() => props.singleLineHtml || '&nbsp;')
 
 // 多行页码与切图宽度派生值。
-const visiblePageCount = computed(() => multilinePageCount.value)
+const visiblePageCount = computed(() => Math.max(1, multilinePageCount.value))
 const multilinePageText = computed(() => `${Math.min(currentPage.value + 1, visiblePageCount.value)} / ${visiblePageCount.value}`)
 const effectiveCutImageWidth = computed(() =>
   clampCutImageWidth(props.previewConfig.cutImageWidth || props.boxMetrics.width),
@@ -151,7 +159,7 @@ const activeMultilinePages = computed(() => {
         key: `page-${currentPage.value}`,
         pageIndex: currentPage.value,
         layerStyle: getTransitionLayerStyle('idle'),
-        flowStyle: getMultilineSliceStyle(currentPage.value),
+        html: getMultilinePageHtml(currentPage.value),
       },
     ]
   }
@@ -161,13 +169,13 @@ const activeMultilinePages = computed(() => {
       key: `from-${transitionState.value.from}-${transitionState.value.to}`,
       pageIndex: transitionState.value.from,
       layerStyle: getTransitionLayerStyle('from'),
-      flowStyle: getMultilineSliceStyle(transitionState.value.from),
+      html: getMultilinePageHtml(transitionState.value.from),
     },
     {
       key: `to-${transitionState.value.from}-${transitionState.value.to}`,
       pageIndex: transitionState.value.to,
       layerStyle: getTransitionLayerStyle('to'),
-      flowStyle: getMultilineSliceStyle(transitionState.value.to),
+      html: getMultilinePageHtml(transitionState.value.to),
     },
   ]
 })
@@ -253,23 +261,111 @@ defineExpose({
 })
 
 function paginateMultilineContent() {
-  // 通过隐藏测量层的 scrollHeight 计算总页数。
-  // 这里不会修改真实内容，只负责得出“当前内容在当前尺寸下应该分成几页”。
-  if (!multilineMeasureRef.value) {
-    multilinePageCount.value = 1
-    hasTruncatedPages.value = false
-    return
-  }
+  // 多行模式不再按整块连续内容直接切片，
+  // 而是先计算整行布局，再按“整行不可跨页”的规则切成多页。
+  const layout = buildTextLayout(safeContentHtml.value, {
+    maxWidth: multilineContentWidth.value,
+    singleLine: false,
+  })
+  const rawPages = paginateLayoutIntoPages(layout.lines, multilineContentHeight.value)
 
-  const totalHeight = Math.max(props.boxMetrics.height, Math.ceil(multilineMeasureRef.value.scrollHeight))
-  const rawPageCount = Math.max(1, Math.ceil(totalHeight / Math.max(1, props.boxMetrics.height)))
-
-  multilinePageCount.value = Math.min(10, rawPageCount)
-  hasTruncatedPages.value = rawPageCount > 10
+  hasTruncatedPages.value = rawPages.length > 10
+  multilinePages.value = rawPages.slice(0, 10).map((lines, index) => createMultilinePage(lines, index))
+  multilinePageCount.value = Math.max(1, multilinePages.value.length)
 
   if (currentPage.value >= multilinePageCount.value) {
     currentPage.value = 0
   }
+}
+
+function paginateLayoutIntoPages(lines, maxContentHeight) {
+  const pages = []
+  const safeMaxHeight = Math.max(1, maxContentHeight)
+  let currentLines = []
+  let currentHeight = 0
+
+  lines.forEach((line) => {
+    const lineHeight = Math.max(1, Math.ceil(line.lineHeight))
+
+    if (currentLines.length > 0 && currentHeight + lineHeight > safeMaxHeight) {
+      pages.push(currentLines)
+      currentLines = []
+      currentHeight = 0
+    }
+
+    currentLines.push(line)
+    currentHeight += lineHeight
+
+    if (currentLines.length === 1 && currentHeight > safeMaxHeight) {
+      pages.push(currentLines)
+      currentLines = []
+      currentHeight = 0
+    }
+  })
+
+  if (currentLines.length || !pages.length) {
+    pages.push(currentLines)
+  }
+
+  return pages
+}
+
+function createMultilinePage(lines, index) {
+  const layout = {
+    lines,
+    width: Math.max(...lines.map((line) => line.width), 0),
+    contentHeight: lines.reduce((total, line) => total + line.lineHeight, 0),
+  }
+
+  return {
+    id: `page-${index + 1}`,
+    layout,
+    html: renderMultilinePageHtml(layout),
+  }
+}
+
+function getMultilinePageHtml(pageIndex) {
+  return multilinePages.value[pageIndex]?.html ?? '&nbsp;'
+}
+
+function renderMultilinePageHtml(layout) {
+  if (!layout.lines.length) {
+    return renderPreviewLine(createEmptyLine(getBaseRenderStyle()))
+  }
+
+  return layout.lines.map((line) => renderPreviewLine(line)).join('')
+}
+
+function renderPreviewLine(line) {
+  const runs = groupCommandsIntoRuns(line.commands)
+  const html = runs.map((run) => renderPreviewRun(run)).join('') || '&nbsp;'
+
+  return `<div class="preview-layout-line" style="height: ${Math.max(1, line.lineHeight)}px; justify-content: ${getPreviewLineJustify(props.textAlign)};">${html}</div>`
+}
+
+function renderPreviewRun(run) {
+  if (!run.text) {
+    return ''
+  }
+
+  const content = escapeHtml(run.text)
+  if (!run.styleText) {
+    return content
+  }
+
+  return `<span style="${escapeAttribute(run.styleText)}">${content}</span>`
+}
+
+function getPreviewLineJustify(textAlign) {
+  if (textAlign === 'center') {
+    return 'center'
+  }
+
+  if (textAlign === 'right') {
+    return 'flex-end'
+  }
+
+  return 'flex-start'
 }
 
 // 把富文本 HTML 拆成“逐字符 token”序列，方便后续做精确的 canvas 排版和切图。
@@ -579,15 +675,6 @@ function getDirectionVector(direction) {
   return { x: '-100%', y: '0%' }
 }
 
-// 多行页本质上是同一份连续内容的不同纵向切片。
-// 通过 translateY 按页高偏移，保证预览与测量来源完全一致。
-function getMultilineSliceStyle(pageIndex) {
-  return {
-    ...multilineFlowStyle.value,
-    transform: `translateY(-${pageIndex * props.boxMetrics.height}px)`,
-  }
-}
-
 // 对外暴露的切图入口。切图过程中会锁住按钮，避免重复触发并发任务。
 async function generateCutImages() {
   if (isGeneratingCutImages.value) {
@@ -614,15 +701,14 @@ async function generateCutImages() {
 }
 
 async function buildMultilineCutImages() {
-  // 多行模式直接基于隐藏测量层采集字形位置信息，然后按页高逐页裁出 PNG。
-  if (!multilineMeasureRef.value) {
-    return []
-  }
-
-  const glyphs = collectMultilineGlyphs(multilineMeasureRef.value)
+  // 多行模式直接对“逐页布局结果”逐页渲染。
+  // 这样每一页都只包含完整行，并且每一页都会重新应用垂直对齐。
+  const pages = multilinePages.value.length
+    ? multilinePages.value
+    : [createMultilinePage([createEmptyLine(getBaseRenderStyle())], 0)]
   const images = []
 
-  for (let index = 0; index < multilinePageCount.value; index += 1) {
+  for (let index = 0; index < pages.length; index += 1) {
     const width = props.boxMetrics.width
     const height = props.boxMetrics.height
 
@@ -631,7 +717,19 @@ async function buildMultilineCutImages() {
       label: `Page ${index + 1}`,
       width,
       height,
-      url: renderCanvasToPng(renderMultilineSliceToCanvas(width, height, index, glyphs)),
+      url: renderCanvasToPng(
+        renderLayoutToCanvas({
+          width,
+          height,
+          layout: pages[index].layout,
+          paddingTop: props.boxMetrics.paddingTop,
+          paddingRight: props.boxMetrics.paddingRight,
+          paddingBottom: props.boxMetrics.paddingBottom,
+          paddingLeft: props.boxMetrics.paddingLeft,
+          textAlign: props.textAlign,
+          verticalAlign: normalizedVerticalAlign.value,
+        }),
+      ),
     })
   }
 
@@ -717,24 +815,6 @@ function renderSingleLineSliceToCanvas({ width, height, sliceStart, totalWidth, 
   return canvas
 }
 
-// 渲染多行某一页。这里只画落在当前页可视区间内的字形。
-function renderMultilineSliceToCanvas(width, height, pageIndex, glyphs) {
-  const canvas = createCanvas(width, height)
-  const context = getCanvasContext(canvas)
-  const pageTop = pageIndex * height
-  const pageBottom = pageTop + height
-
-  glyphs.forEach((glyph) => {
-    if (glyph.bottom <= pageTop || glyph.top >= pageBottom) {
-      return
-    }
-
-    drawResolvedGlyph(context, glyph, pageTop)
-  })
-
-  return canvas
-}
-
 // 创建指定尺寸的离屏 canvas。
 function createCanvas(width, height) {
   const canvas = document.createElement('canvas')
@@ -764,70 +844,6 @@ function renderCanvasToPng(canvas) {
   return canvas.toDataURL('image/png')
 }
 
-// 从真实 DOM 中逐字符采集字形矩形和样式。
-// 这条路径用于多行切图，因为它最接近浏览器已经完成的最终排版结果。
-function collectMultilineGlyphs(root) {
-  const rootRect = root.getBoundingClientRect()
-  const glyphs = []
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-
-  while (walker.nextNode()) {
-    const textNode = walker.currentNode
-    const parentElement = textNode.parentElement ?? root
-    const computedStyle = getComputedCanvasStyle(parentElement)
-    const text = textNode.textContent ?? ''
-
-    for (let index = 0; index < text.length; index += 1) {
-      const character = text[index]
-      if (character === '\n' || character === '\r') {
-        continue
-      }
-
-      const range = document.createRange()
-      range.setStart(textNode, index)
-      range.setEnd(textNode, index + 1)
-
-      const rectList = [...range.getClientRects()]
-      if (!rectList.length) {
-        const fallbackWidth = measureCharacter(character, computedStyle).width
-        const previousGlyph = glyphs[glyphs.length - 1]
-        const fallbackX = previousGlyph ? previousGlyph.x + previousGlyph.advance : 0
-        glyphs.push({
-          char: character,
-          style: computedStyle,
-          x: fallbackX,
-          width: fallbackWidth,
-          advance: fallbackWidth + computedStyle.letterSpacing,
-          top: previousGlyph ? previousGlyph.top : 0,
-          bottom: previousGlyph ? previousGlyph.bottom : computedStyle.lineHeightPx,
-          height: previousGlyph ? previousGlyph.height : computedStyle.lineHeightPx,
-        })
-        range.detach?.()
-        continue
-      }
-
-      rectList.forEach((rect) => {
-        const width = rect.width || measureCharacter(character, computedStyle).width
-
-        glyphs.push({
-          char: character,
-          style: computedStyle,
-          x: rect.left - rootRect.left,
-          width,
-          advance: width + computedStyle.letterSpacing,
-          top: rect.top - rootRect.top,
-          bottom: rect.bottom - rootRect.top,
-          height: rect.height || computedStyle.lineHeightPx,
-        })
-      })
-
-      range.detach?.()
-    }
-  }
-
-  return glyphs
-}
-
 // 使用纯 canvas 规则重建文本布局。
 // 单行切图依赖这里计算整段内容的宽度和每个字符的落点。
 function buildTextLayout(html, { maxWidth, singleLine }) {
@@ -836,39 +852,41 @@ function buildTextLayout(html, { maxWidth, singleLine }) {
   const lines = []
   let currentLine = createEmptyLine(baseStyle)
 
-  tokens.forEach((token) => {
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]
+
     if (token.type === 'br') {
       if (singleLine) {
-        return
+        continue
       }
 
       lines.push(finalizeLine(currentLine))
       currentLine = createEmptyLine(baseStyle)
-      return
+      continue
     }
 
-    const style = getParsedTokenStyle(token.style)
-    const metrics = measureCharacter(token.value, style)
+    const group = consumeLayoutTokenGroup(tokens, index)
+    const style = getParsedTokenStyle(group.styleText)
+    const metrics = measureTokenGroup(group.tokens, style)
 
-    if (!singleLine && currentLine.commands.length > 0 && currentLine.advance + metrics.width > maxWidth) {
-      lines.push(finalizeLine(currentLine))
-      currentLine = createEmptyLine(baseStyle)
+    if (!singleLine && currentLine.commands.length > 0 && currentLine.advance + metrics.advance > maxWidth) {
+      if (group.tokens.length > 1 && metrics.advance <= maxWidth) {
+        lines.push(finalizeLine(currentLine))
+        currentLine = createEmptyLine(baseStyle)
+      } else {
+        const splitResult = appendTokensWithWrapping(group.tokens, currentLine, style, maxWidth, baseStyle)
+        currentLine = splitResult.currentLine
+        splitResult.completedLines.forEach((line) => {
+          lines.push(line)
+        })
+        index = group.endIndex
+        continue
+      }
     }
 
-    currentLine.commands.push({
-      char: token.value,
-      style,
-      x: currentLine.advance,
-      width: metrics.width,
-      advance: metrics.advance,
-    })
-    currentLine.advance += metrics.advance
-    currentLine.width = currentLine.advance - style.letterSpacing
-    currentLine.lineHeight = Math.max(currentLine.lineHeight, style.lineHeightPx)
-    currentLine.maxAscent = Math.max(currentLine.maxAscent, style.ascent)
-    currentLine.maxDescent = Math.max(currentLine.maxDescent, style.descent)
-    currentLine.textHeight = Math.max(currentLine.textHeight, style.ascent + style.descent)
-  })
+    appendTokenGroupToLine(group.tokens, currentLine, style)
+    index = group.endIndex
+  }
 
   if (currentLine.commands.length || !lines.length) {
     lines.push(finalizeLine(currentLine))
@@ -879,6 +897,147 @@ function buildTextLayout(html, { maxWidth, singleLine }) {
     width: Math.max(...lines.map((line) => line.width), 0),
     contentHeight: lines.reduce((total, line) => total + line.lineHeight, 0),
   }
+}
+
+function consumeLayoutTokenGroup(tokens, startIndex) {
+  const token = tokens[startIndex]
+
+  if (token.type !== 'text') {
+    return {
+      endIndex: startIndex,
+      styleText: '',
+      tokens: [],
+    }
+  }
+
+  const groupTokens = [token]
+  const styleText = token.style || ''
+
+  if (isWhitespaceToken(token)) {
+    let index = startIndex + 1
+
+    while (index < tokens.length && tokens[index].type === 'text' && (tokens[index].style || '') === styleText && isWhitespaceToken(tokens[index])) {
+      groupTokens.push(tokens[index])
+      index += 1
+    }
+
+    return {
+      endIndex: index - 1,
+      styleText,
+      tokens: groupTokens,
+    }
+  }
+
+  if (!isWordStartToken(token)) {
+    return {
+      endIndex: startIndex,
+      styleText,
+      tokens: groupTokens,
+    }
+  }
+
+  let index = startIndex + 1
+
+  while (index < tokens.length && tokens[index].type === 'text' && (tokens[index].style || '') === styleText && isWordContinuationToken(tokens[index])) {
+    groupTokens.push(tokens[index])
+    index += 1
+  }
+
+  return {
+    endIndex: index - 1,
+    styleText,
+    tokens: groupTokens,
+  }
+}
+
+function appendTokensWithWrapping(tokens, currentLine, style, maxWidth, baseStyle) {
+  const completedLines = []
+  let activeLine = currentLine
+
+  tokens.forEach((token) => {
+    const tokenMetrics = measureTokenGroup([token], style)
+
+    if (activeLine.commands.length > 0 && activeLine.advance + tokenMetrics.advance > maxWidth) {
+      completedLines.push(finalizeLine(activeLine))
+      activeLine = createEmptyLine(baseStyle)
+    }
+
+    appendTokenGroupToLine([token], activeLine, style)
+  })
+
+  return {
+    completedLines,
+    currentLine: activeLine,
+  }
+}
+
+function appendTokenGroupToLine(tokens, line, style) {
+  const widths = measureTokenPrefixWidths(tokens, style)
+  const groupAdvance = widths[widths.length - 1] + style.letterSpacing * Math.max(0, tokens.length - 1)
+  const lineBaseX = line.advance
+
+  tokens.forEach((token, index) => {
+    const startOffset = widths[index]
+    const endOffset = widths[index + 1]
+    const charWidth = Math.max(0, endOffset - startOffset)
+    const hasNext = index < tokens.length - 1
+
+    line.commands.push({
+      char: token.value,
+      style,
+      styleText: token.style || '',
+      x: lineBaseX + startOffset + style.letterSpacing * index,
+      width: charWidth,
+      advance: charWidth + (hasNext ? style.letterSpacing : 0),
+    })
+  })
+
+  line.advance += groupAdvance
+  line.width = line.advance
+  line.lineHeight = Math.max(line.lineHeight, style.lineHeightPx)
+  line.maxAscent = Math.max(line.maxAscent, style.ascent)
+  line.maxDescent = Math.max(line.maxDescent, style.descent)
+  line.textHeight = Math.max(line.textHeight, style.ascent + style.descent)
+}
+
+function measureTokenGroup(tokens, style) {
+  const text = tokens.map((token) => token.value).join('')
+  const width = measureTextValue(text, style)
+
+  return {
+    width,
+    advance: width + style.letterSpacing * Math.max(0, tokens.length - 1),
+  }
+}
+
+function measureTokenPrefixWidths(tokens, style) {
+  const widths = [0]
+  let text = ''
+
+  tokens.forEach((token) => {
+    text += token.value
+    widths.push(measureTextValue(text, style))
+  })
+
+  return widths
+}
+
+function measureTextValue(value, style) {
+  const context = getTextMeasureContext()
+  context.font = style.font
+  return context.measureText(value).width
+}
+
+function isWhitespaceToken(token) {
+  return /\s/.test(token.value)
+}
+
+function isWordStartToken(token) {
+  return /[A-Za-z0-9]/.test(token.value)
+}
+
+function isWordContinuationToken(token) {
+  return /[A-Za-z0-9._,:+\-/%@#]/.test(token.value)
 }
 
 // 创建一条空白逻辑行，并用基础样式初始化行高、基线相关数据。
@@ -902,6 +1061,34 @@ function finalizeLine(line) {
   }
 }
 
+function groupCommandsIntoRuns(commands) {
+  const runs = []
+
+  commands.forEach((command) => {
+    const previous = runs[runs.length - 1]
+
+    if (previous && previous.style === command.style && previous.styleText === command.styleText) {
+      previous.text += command.char
+      previous.commands.push(command)
+      previous.width = Math.max(0, command.x + command.width - previous.x)
+      previous.advance = Math.max(0, command.x + command.advance - previous.x)
+      return
+    }
+
+    runs.push({
+      text: command.char,
+      style: command.style,
+      styleText: command.styleText || '',
+      x: command.x,
+      width: command.width,
+      advance: command.advance,
+      commands: [command],
+    })
+  })
+
+  return runs
+}
+
 // 把单行或多行中的一整行命令绘制到 canvas 上。
 // clip 参数主要给单行切片使用，只允许可见片段进入最终导出图像。
 function drawLine(context, line, startX, lineTop, clip = null) {
@@ -915,8 +1102,10 @@ function drawLine(context, line, startX, lineTop, clip = null) {
     context.clip()
   }
 
-  line.commands.forEach((command) => {
-    drawCharacter(context, command, startX + command.x, baseline, lineTop, line.lineHeight)
+  drawLineBackgroundSegments(context, line, startX, lineTop, line.lineHeight)
+
+  groupCommandsIntoRuns(line.commands).forEach((run) => {
+    drawTextRun(context, run, startX, baseline, lineTop, line.lineHeight)
   })
 
   if (clip) {
@@ -924,49 +1113,83 @@ function drawLine(context, line, startX, lineTop, clip = null) {
   }
 }
 
-// 多行切图使用的字形绘制入口。
-// 它会把“整篇文档中的绝对位置”转换成“当前页中的相对位置”。
-function drawResolvedGlyph(context, glyph, pageTop) {
-  const y = glyph.top - pageTop
-  const baseline =
-    y + Math.max(0, (glyph.height - (glyph.style.ascent + glyph.style.descent)) / 2) + glyph.style.ascent
-
-  drawCharacter(context, {
-    char: glyph.char,
-    style: glyph.style,
-    width: glyph.width,
-    advance: glyph.advance,
-  }, glyph.x, baseline, y, glyph.height)
-}
-
-// 实际的单字符绘制函数。
-// 背景色、阴影、描边、填充和下划线都在这里按顺序执行，确保和编辑区显示接近一致。
-function drawCharacter(context, command, x, baseline, lineTop, lineHeight) {
-  const { style, char, width, advance } = command
+function drawTextRun(context, run, lineStartX, baseline, lineTop, lineHeight) {
+  const { style } = run
+  const x = lineStartX + run.x
+  const width = getRunVisualWidth(run)
 
   context.font = style.font
   context.textBaseline = 'alphabetic'
 
-  if (style.background) {
-    context.fillStyle = style.background
-    context.fillRect(x, lineTop, Math.max(width, advance), lineHeight)
+  if (run.text.length > 1 && style.letterSpacing === 0) {
+    drawWholeTextRun(context, run, x, baseline, width)
+    return
   }
+
+  drawRunCharacters(context, run, lineStartX, baseline, width)
+}
+
+function drawLineBackgroundSegments(context, line, lineStartX, lineTop, lineHeight) {
+  const segments = []
+  let activeSegment = null
+
+  line.commands.forEach((command) => {
+    const background = command.style.background
+
+    if (!background) {
+      activeSegment = null
+      return
+    }
+
+    const commandStart = command.x
+    const commandEnd = command.x + getCommandVisualWidth(command)
+
+    if (
+      activeSegment &&
+      activeSegment.background === background &&
+      commandStart <= activeSegment.end + 0.01
+    ) {
+      activeSegment.end = Math.max(activeSegment.end, commandEnd)
+      return
+    }
+
+    activeSegment = {
+      background,
+      start: commandStart,
+      end: commandEnd,
+    }
+    segments.push(activeSegment)
+  })
+
+  segments.forEach((segment) => {
+    context.fillStyle = segment.background
+    context.fillRect(
+      lineStartX + segment.start,
+      lineTop,
+      Math.max(0, segment.end - segment.start),
+      lineHeight,
+    )
+  })
+}
+
+function drawWholeTextRun(context, run, x, baseline, width) {
+  const { style, text } = run
 
   if (style.textShadows.length) {
     style.textShadows.forEach((shadow) => {
       context.fillStyle = shadow.color
-      context.fillText(char, x + shadow.x, baseline + shadow.y)
+      context.fillText(text, x + shadow.x, baseline + shadow.y)
     })
   }
 
   if (style.strokeWidth > 0) {
     context.lineWidth = style.strokeWidth
     context.strokeStyle = style.strokeColor
-    context.strokeText(char, x, baseline)
+    context.strokeText(text, x, baseline)
   }
 
   context.fillStyle = style.color
-  context.fillText(char, x, baseline)
+  context.fillText(text, x, baseline)
 
   if (style.underline) {
     const underlineY = baseline + Math.max(1, style.fontSize * 0.08)
@@ -974,9 +1197,54 @@ function drawCharacter(context, command, x, baseline, lineTop, lineHeight) {
     context.lineWidth = Math.max(1, style.fontSize * 0.06)
     context.beginPath()
     context.moveTo(x, underlineY)
-    context.lineTo(x + Math.max(width, advance - style.letterSpacing), underlineY)
+    context.lineTo(x + width, underlineY)
     context.stroke()
   }
+}
+
+function drawRunCharacters(context, run, lineStartX, baseline, width) {
+  const { style } = run
+
+  if (style.textShadows.length) {
+    style.textShadows.forEach((shadow) => {
+      run.commands.forEach((command) => {
+        context.fillStyle = shadow.color
+        context.fillText(command.char, lineStartX + command.x + shadow.x, baseline + shadow.y)
+      })
+    })
+  }
+
+  if (style.strokeWidth > 0) {
+    context.lineWidth = style.strokeWidth
+    context.strokeStyle = style.strokeColor
+
+    run.commands.forEach((command) => {
+      context.strokeText(command.char, lineStartX + command.x, baseline)
+    })
+  }
+
+  context.fillStyle = style.color
+  run.commands.forEach((command) => {
+    context.fillText(command.char, lineStartX + command.x, baseline)
+  })
+
+  if (style.underline) {
+    const underlineY = baseline + Math.max(1, style.fontSize * 0.08)
+    context.strokeStyle = style.color
+    context.lineWidth = Math.max(1, style.fontSize * 0.06)
+    context.beginPath()
+    context.moveTo(lineStartX + run.x, underlineY)
+    context.lineTo(lineStartX + run.x + width, underlineY)
+    context.stroke()
+  }
+}
+
+function getRunVisualWidth(run) {
+  return Math.max(run.width, run.advance)
+}
+
+function getCommandVisualWidth(command) {
+  return Math.max(command.width, command.advance)
 }
 
 // 返回 canvas 渲染使用的基础样式对象。
@@ -1375,26 +1643,17 @@ function normalizeVerticalAlign(value) {
           class="preview-page preview-page-layer"
           :style="page.layerStyle"
         >
-          <div class="preview-page-flow" :style="page.flowStyle">
-            <div class="preview-page-copy" v-html="safeContentHtml" />
+          <div class="preview-page-content" :style="multilinePageContentStyle">
+            <div class="preview-page-copy" v-html="page.html" />
           </div>
         </div>
       </div>
 
-      <!-- 隐藏测量层：专门用于计算 scrollHeight 和分页，不参与实际展示。 -->
-      <div
-        ref="multilineMeasureRef"
-        class="preview-page preview-flow-measure"
-        :style="multilineFlowStyle"
-        aria-hidden="true"
-        v-html="safeContentHtml"
-      />
-
       <p class="preview-note">
-        Each page uses the current `Editor width`, `Editor height`, and all four padding values.
+        Multiline pages are paginated by whole lines, so text will not be split across pages.
       </p>
       <p class="preview-note">
-        Maximum 10 pages are supported in multiline preview.
+        `Vertical align` is applied independently to every multiline page.
       </p>
       <p v-if="hasTruncatedPages" class="preview-warning">
         Content exceeds 10 pages. Data after page 10 is discarded automatically.
@@ -1583,28 +1842,36 @@ h2 {
   will-change: transform;
 }
 
-/* 真实显示层与隐藏测量层必须共享完全一致的排版规则。 */
-.preview-page-flow,
-.preview-flow-measure {
+/* 每一页都使用独立内容盒，保证垂直对齐和分页在页内单独成立。 */
+.preview-page-content {
   box-sizing: border-box;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 24px;
-  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  line-height: 1.5;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: stretch;
   background: white;
 }
 
 .preview-page-copy {
   width: 100%;
+  display: grid;
+  gap: 0;
 }
 
-.preview-flow-measure {
-  position: absolute;
-  left: -99999px;
-  top: 0;
-  visibility: hidden;
-  pointer-events: none;
+.preview-layout-line {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  white-space: pre;
+  overflow: visible;
+}
+
+.preview-layout-line :deep(span) {
+  font-size: 24px;
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  line-height: 1.5;
 }
 
 /* 单行模式把整条文本放进可移动轨道中，轨道不换行。 */
