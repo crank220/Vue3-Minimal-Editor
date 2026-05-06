@@ -92,7 +92,8 @@ let textMeasureContext = null
 // 当某些 HTML 片段没有显式样式时，会从这里补齐缺省值。
 const BASE_RENDER_STYLE = {
   fontSize: 24,
-  fontFamily: "'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif",
+  // 这里必须和 editor / preview 的默认字体栈保持一致，避免未显式包 span 的文本导出后换字体。
+  fontFamily: "'Source Han Sans SC', 'Source Han Sans CN', 'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif",
   fontWeight: 'normal',
   fontStyle: 'normal',
   color: '#000000',
@@ -1724,7 +1725,7 @@ h2 {
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 24px;
-  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: 'Source Han Sans SC', 'Source Han Sans CN', 'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   line-height: 1.5;
 }
 
@@ -1754,7 +1755,7 @@ h2 {
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 24px;
-  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: 'Source Han Sans SC', 'Source Han Sans CN', 'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   line-height: 1.5;
   background: white;
 }
@@ -1778,7 +1779,7 @@ h2 {
   align-items: center;
   white-space: nowrap;
   font-size: 24px;
-  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: 'Source Han Sans SC', 'Source Han Sans CN', 'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   line-height: 1.5;
 }
 

@@ -6,6 +6,13 @@ import { reactive } from 'vue'
 
 // 字体下拉选项。aliases 用于把浏览器回读的 font-family 反解成工具栏中的预设项。
 export const FONT_FAMILY_OPTIONS = [
+  // 把思源黑体放在首位，作为编辑区、预览区和切图共享的默认字体栈。
+  // 同时兼容 Source Han Sans / Noto Sans CJK 的常见本地命名。
+  {
+    label: '思源黑体',
+    value: "'Source Han Sans SC', 'Source Han Sans CN', 'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif",
+    aliases: ['source han sans sc', 'source han sans cn', 'source han sans', 'noto sans cjk sc', 'noto sans sc', '思源黑体'],
+  },
   {
     label: 'Segoe UI',
     value: "'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif",
@@ -61,6 +68,7 @@ export const FONT_FAMILY_OPTIONS = [
 // 当前选中文本的默认样式。
 export const DEFAULT_STYLE_STATE = {
   fontSize: 24,
+  // 默认值直接复用字体列表第一项，避免编辑、预览和切图出现各自维护默认字体的分叉。
   fontFamily: FONT_FAMILY_OPTIONS[0].value,
   color: '#000000',
   background: 'transparent',

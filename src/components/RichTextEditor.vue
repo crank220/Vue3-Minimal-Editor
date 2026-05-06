@@ -692,6 +692,8 @@ code {
   border: 1px solid rgba(24, 33, 47, 0.08);
   background: white;
   font-size: 24px;
+  /* 给未显式包裹 span 的初始文本一个稳定默认字体，和预览区、切图区保持同源。 */
+  font-family: 'Source Han Sans SC', 'Source Han Sans CN', 'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
   scrollbar-width: none;
   -ms-overflow-style: none;
