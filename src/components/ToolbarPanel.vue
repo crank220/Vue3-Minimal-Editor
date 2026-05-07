@@ -1,14 +1,42 @@
 <script setup>
-// 工具栏组件。
-// 负责维护所有样式输入入口，并把最终配置写入共享状态。
-// 具体如何把这些状态应用到选区，由 RichTextEditor 负责。
-import { computed } from 'vue'
-import { FONT_FAMILY_OPTIONS, editorBoxState, previewState, styleState } from '../composables/useStyle'
+import { computed, toRefs } from 'vue'
+import { FONT_FAMILY_OPTIONS } from '../composables/useStyle'
 
-// 将切图动作抛给父组件，由父组件调用预览区的导出逻辑。
+defineOptions({
+  name: 'HdTextEditorToolbar',
+})
+
+const props = defineProps({
+  styleState: {
+    type: Object,
+    required: true,
+  },
+  editorBoxState: {
+    type: Object,
+    required: true,
+  },
+  previewState: {
+    type: Object,
+    required: true,
+  },
+  showCutButton: {
+    type: Boolean,
+    default: true,
+  },
+  uiClassMap: {
+    type: Object,
+    default: () => ({}),
+  },
+  uiStyleMap: {
+    type: Object,
+    default: () => ({}),
+  },
+})
+
 const emit = defineEmits(['cut-images'])
 
-// 基础文字控制选项。
+const { styleState, editorBoxState, previewState, uiClassMap, uiStyleMap } = toRefs(props)
+
 const fontSizes = [16, 20, 24, 28, 32, 40, 48]
 const alignments = [
   { label: 'Left', value: 'left' },
@@ -21,8 +49,6 @@ const verticalAlignments = [
   { label: 'Center', value: 'center' },
   { label: 'Bottom', value: 'flex-end' },
 ]
-
-// 描边、预览格式和动画相关配置选项。
 const strokePositions = [
   { label: 'Inside', value: 'inside' },
   { label: 'Center', value: 'center' },
@@ -57,28 +83,25 @@ const singleLineModes = [
 const singleLineSpeedOptions = [1, 2, 3, 4, 5, 6, 7, 8, 9]
 const lineHeightPresets = [1, 1.2, 1.5, 1.8, 2, 2.4]
 
-// 背景色在 UI 中总是使用颜色选择器展示。
-// 当实际值是 transparent 时，这里临时回显为白色，避免原生颜色框无法显示“透明”。
+// transparent 不能直接显示在原生 color input 中，这里回显成白色占位。
 const backgroundValue = computed({
-  get: () => (styleState.background === 'transparent' ? '#ffffff' : styleState.background),
+  get: () => (styleState.value.background === 'transparent' ? '#ffffff' : styleState.value.background),
   set: (value) => {
-    styleState.background = value
+    styleState.value.background = value
   },
 })
 
-// 行高会被滑杆与预设按钮共同修改，因此用计算属性统一做约束。
+// 行高既可能被滑杆改，也可能被预设按钮改，所以统一走一个入口。
 const lineHeightValue = computed({
-  get: () => clampLineHeight(styleState.lineHeight),
+  get: () => clampLineHeight(styleState.value.lineHeight),
   set: (value) => {
-    styleState.lineHeight = clampLineHeight(value)
+    styleState.value.lineHeight = clampLineHeight(value)
   },
 })
 
-// 单独格式化当前行高显示值，避免模板内重复处理小数。
 const lineHeightLabel = computed(() => lineHeightValue.value.toFixed(1))
 
 function clampLineHeight(value) {
-  // 行高统一限制在 1.0 - 3.0 范围内，并保留 1 位小数。
   const number = Number.parseFloat(value)
   if (!Number.isFinite(number)) {
     return 1.5
@@ -89,9 +112,7 @@ function clampLineHeight(value) {
 </script>
 
 <template>
-  <!-- 工具栏按“文字样式 / 编辑区尺寸 / 预览配置”分组展示。 -->
-  <div class="toolbar">
-    <!-- 常用强调样式按钮。 -->
+  <div :class="['toolbar', uiClassMap.toolbar]" :style="uiStyleMap.toolbar">
     <div class="toolbar-group">
       <button
         type="button"
@@ -119,7 +140,6 @@ function clampLineHeight(value) {
       </button>
     </div>
 
-    <!-- 字体与字号配置。 -->
     <div class="toolbar-group field-group">
       <label>
         Font family
@@ -138,7 +158,6 @@ function clampLineHeight(value) {
       </label>
     </div>
 
-    <!-- 文本颜色与背景色配置。 -->
     <div class="toolbar-group field-group">
       <label>
         Text color
@@ -151,7 +170,6 @@ function clampLineHeight(value) {
       </label>
     </div>
 
-    <!-- 描边颜色、粗细与位置配置。 -->
     <div class="toolbar-group field-group">
       <label>
         Stroke color
@@ -173,7 +191,6 @@ function clampLineHeight(value) {
       </label>
     </div>
 
-    <!-- 字间距与行高配置。 -->
     <div class="toolbar-group field-group">
       <label>
         Letter spacing
@@ -209,7 +226,6 @@ function clampLineHeight(value) {
       </label>
     </div>
 
-    <!-- 水平对齐与垂直对齐配置。 -->
     <div class="toolbar-group field-group">
       <label>
         Align
@@ -230,7 +246,6 @@ function clampLineHeight(value) {
       </label>
     </div>
 
-    <!-- 编辑区尺寸与四向内边距配置。 -->
     <div class="toolbar-group field-group">
       <label>
         Editor width
@@ -263,7 +278,6 @@ function clampLineHeight(value) {
       </label>
     </div>
 
-    <!-- 预览模式、动画参数和切图参数配置。 -->
     <div class="toolbar-group field-group">
       <label>
         Preview format
@@ -345,13 +359,19 @@ function clampLineHeight(value) {
         </label>
       </template>
 
-      <button type="button" @mousedown.prevent @click="emit('cut-images')">Cut PNG</button>
+      <button
+        v-if="showCutButton"
+        type="button"
+        @mousedown.prevent
+        @click="emit('cut-images')"
+      >
+        Cut PNG
+      </button>
     </div>
   </div>
 </template>
 
 <style scoped>
-/* 工具栏主体允许自动换行，避免配置项过多时横向溢出。 */
 .toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -359,7 +379,6 @@ function clampLineHeight(value) {
   align-items: center;
 }
 
-/* 每个工具分组都有独立容器，便于视觉分区。 */
 .toolbar-group {
   display: flex;
   gap: 8px;
@@ -369,12 +388,10 @@ function clampLineHeight(value) {
   background: rgba(13, 20, 33, 0.04);
 }
 
-/* 表单型分组允许内部项目自动换行。 */
 .field-group {
   flex-wrap: wrap;
 }
 
-/* label 采用标题在上、控件在下的纵向布局。 */
 label {
   display: grid;
   gap: 6px;
@@ -382,13 +399,11 @@ label {
   color: #556277;
 }
 
-/* 数值输出使用等宽数字，减少跳动感。 */
 output {
   font-variant-numeric: tabular-nums;
   color: #18212f;
 }
 
-/* 为按钮、下拉框和输入框统一基础视觉风格。 */
 button,
 select,
 input {
@@ -398,7 +413,6 @@ input {
   color: #18212f;
 }
 
-/* 普通按钮使用更大的点击面积。 */
 button {
   min-width: 42px;
   min-height: 42px;
@@ -406,45 +420,38 @@ button {
   font-weight: 700;
 }
 
-/* 激活态用于展示当前已启用的布尔样式。 */
 button.active {
   border-color: rgba(54, 107, 255, 0.55);
   background: rgba(54, 107, 255, 0.12);
   color: #234bce;
 }
 
-/* 下拉框和数字输入统一高度，便于对齐。 */
 select,
 input[type='number'] {
   min-height: 40px;
   padding: 0 12px;
 }
 
-/* 颜色输入框使用固定小尺寸。 */
 input[type='color'] {
   width: 46px;
   height: 40px;
   padding: 4px;
 }
 
-/* 复选框去掉默认 margin，方便与文字对齐。 */
 input[type='checkbox'] {
   width: 18px;
   height: 18px;
   margin: 0;
 }
 
-/* 行高控件需要容纳滑杆和预设按钮，因此给更宽的最小宽度。 */
 .line-height-control {
   min-width: 220px;
 }
 
-/* 复选框型 label 在垂直方向居中。 */
 .toggle-label {
   align-content: center;
 }
 
-/* 行高标题行同时展示字段名与当前数值。 */
 .field-heading {
   display: flex;
   align-items: center;
@@ -452,21 +459,18 @@ input[type='checkbox'] {
   gap: 10px;
 }
 
-/* 滑杆宽度跟随父容器。 */
 .line-height-slider {
   width: 100%;
   min-height: auto;
   padding: 0;
 }
 
-/* 行高预设按钮允许换行展示。 */
 .line-height-presets {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-/* 预设按钮比普通按钮更紧凑。 */
 .preset-button {
   min-width: 0;
   min-height: 30px;
@@ -476,7 +480,6 @@ input[type='checkbox'] {
 }
 
 @media (max-width: 720px) {
-  /* 移动端下每个工具组单独占一行，提升可读性。 */
   .toolbar {
     align-items: stretch;
   }

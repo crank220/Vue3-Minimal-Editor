@@ -4,6 +4,25 @@
 
 这个项目不是通用型富文本编辑器，而是一个“排版可控、预览可控、切图可控”的前端文本引擎。它直接建立在浏览器原生能力之上：`contenteditable`、`Range`、`Selection`、DOM 归一化、Canvas 渲染，不依赖 Quill、Slate、Tiptap 等第三方编辑器框架。
 
+当前 npm 插件名为 `hd-text-editor`。项目现在同时包含两部分：
+
+1. 当前仓库内的 demo / 调试页面。
+2. 可以被其他 Vue 3 项目通过 npm 安装的插件入口。
+
+## 一致性约束
+
+后续维护这个项目时，需要严格遵守这 3 条：
+
+1. 开始改动前先阅读上下文和 `README.md`。
+2. `editor`、`preview-viewport`、`cut-preview-item` 三者必须共享同一份 HTML、同一组盒模型和同一套背景/基线规则，保证编辑、预览、切图效果一致。
+3. 新增代码要补充注释；新增功能要同步更新 `README.md`。
+
+本轮插件化补充了几条新的统一规则：
+
+1. 编辑区、预览区、切图区的默认字体、字号、行高、圆角、边框和背景统一由 `surfaceTheme` 映射到同一组 CSS 变量。
+2. 多行 PNG 导出不再逐字符涂背景，而是按连续 inline 片段合并 background，再按同一个 inline box 计算文字基线。
+3. 插件 demo 页面直接通过插件入口 `src/lib/index.js` 使用组件，用真实消费方式做演示与回归验证。
+
 项目当前关注的核心目标有 4 个：
 
 1. 选区稳定：工具栏操作不应打断文本选中，也不应因为输入数值而丢失选区。
@@ -25,6 +44,10 @@
 8. 单行模式支持静态、左移、右移、无缝循环。
 9. 支持按预览结果生成 PNG，切图与预览共享同一份分页结果，并在页面下方查看切图预览。
 10. 支持自定义编辑区悬浮滚动条，鼠标移入时显示，且不挤压内容。
+11. 支持作为 Vue 3 插件发布，包名为 `hd-text-editor`。
+12. 插件支持通过 `v-model` / 配置 props 传入当前 HTML、工具栏配置、编辑区盒模型、预览配置和共享外观主题。
+13. 插件支持通过 `ref` 暴露 `focus`、`blur`、`getHtml`、`setHtml`、`setConfigs`、`getSnapshot`、`generateCutImages`、`getCutImages` 等方法。
+14. 插件支持抛出 `ready`、`text-change`、`selection-change`、`editor-change`、`cut-images` 事件，其中 `cut-images` 会返回全部切图结果和当前配置快照。
 
 ## 技术栈
 
@@ -51,11 +74,108 @@ npm run dev
 npm run build
 ```
 
+构建 npm 插件产物：
+
+```bash
+npm run build:lib
+```
+
 本地预览构建结果：
 
 ```bash
 npm run preview
 ```
+
+发布到本地 npm 服务：
+
+```bash
+npm run publish
+```
+
+其中 `npm run publish` 实际执行：
+
+```bash
+npm publish --registry http://192.168.90.222:66
+```
+
+## 插件使用
+
+安装：
+
+```bash
+npm install hd-text-editor
+```
+
+在 Vue 3 项目中使用：
+
+```js
+import { createApp } from 'vue'
+import App from './App.vue'
+import HdTextEditorPlugin from 'hd-text-editor'
+import 'hd-text-editor/style.css'
+
+createApp(App).use(HdTextEditorPlugin).mount('#app')
+```
+
+也可以按组件方式按需引入：
+
+```vue
+<script setup>
+import { ref } from 'vue'
+import { HdTextEditor, createPreviewConfig } from 'hd-text-editor'
+import 'hd-text-editor/style.css'
+
+const html = ref('<span>hello hd-text-editor</span>')
+const previewConfig = ref(createPreviewConfig())
+</script>
+
+<template>
+  <HdTextEditor v-model="html" v-model:preview-config="previewConfig" />
+</template>
+```
+
+### 传入 props
+
+插件支持以下核心输入：
+
+1. `v-model` / `modelValue`：当前 HTML 内容。
+2. `styleConfig`：原 `toolbar` 中的文本样式项，例如 `fontSize`、`fontFamily`、`color`、`background`、`bold`、`italic`、`underline`、`letterSpacing`、`lineHeight`、`strokeColor`、`strokeWidth`、`strokePosition`、`textAlign`、`verticalAlign`。
+3. `editorBoxConfig`：原 `toolbar` 中的编辑区尺寸项，例如 `width`、`height`、`paddingTop`、`paddingRight`、`paddingBottom`、`paddingLeft`。
+4. `previewConfig`：原 `toolbar` 中的预览项，例如 `format`、`pageTransitionDirection`、`pageTransitionMs`、`pageStaySeconds`、`cutImageWidth`、`singleLineMode`、`singleLineSpeed`、`singleLineSeamless`。
+5. `surfaceTheme`：统一控制 `editor`、`preview-viewport`、`cut-preview-item` 的共享外观，支持 `fontFamily`、`fontSize`、`lineHeight`、`background`、`borderColor`、`borderRadius`、`insetShadow`。
+6. `showToolbar`、`showCutPreview`：控制内置工具栏和切图预览区是否显示。
+7. `uiClassMap`、`uiStyleMap`：给宿主项目自定义外层样式。当前支持的 key 包括 `root`、`workspace`、`toolbar`、`editorStage`、`editor`、`previewStage`、`previewViewport`、`cutPreviewStage`、`cutPreviewItem`、`cutPreviewImage`。
+
+### 传出事件
+
+插件当前会抛出：
+
+1. `ready`
+2. `text-change`
+3. `selection-change`
+4. `editor-change`
+5. `cut-images`
+
+其中 `cut-images` 会返回：
+
+1. `images`：全部切图图片列表。
+2. `format`：当前切图模式。
+3. `boxMetrics`、`previewConfig`、`textAlign`、`verticalAlign`
+4. `html`
+5. `snapshot`：当前完整配置快照。
+
+### ref 方法
+
+可以通过组件 `ref` 调用：
+
+1. `focus()`
+2. `blur()`
+3. `getHtml()`
+4. `setHtml(html, source?)`
+5. `setConfigs({ styleConfig, editorBoxConfig, previewConfig, surfaceTheme })`
+6. `getSnapshot()`
+7. `generateCutImages(source?)`
+8. `getCutImages()`
 
 ## 目录结构
 
@@ -77,6 +197,8 @@ Vue3-Minimal-Editor
 │  ├─ composables/
 │  │  ├─ useSelection.js
 │  │  └─ useStyle.js
+│  ├─ lib/
+│  │  └─ index.js
 │  ├─ utils/
 │  │  └─ normalize.js
 │  ├─ App.vue
@@ -92,14 +214,15 @@ Vue3-Minimal-Editor
 
 | 路径 | 职责 |
 | --- | --- |
-| `src/main.js` | 应用入口，加载全局样式并挂载根组件。 |
-| `src/App.vue` | 根组件，只承载主编辑器。 |
+| `src/main.js` | demo 应用入口，加载全局样式并挂载插件演示页。 |
+| `src/App.vue` | 当前项目的插件 demo，直接以消费方方式使用 `HdTextEditor`。 |
 | `src/style.css` | 全局视觉基线和全局控件样式。 |
-| `src/components/RichTextEditor.vue` | 编辑主控组件，连接工具栏、编辑区、预览区。 |
-| `src/components/ToolbarPanel.vue` | 工具栏 UI，负责修改共享状态。 |
-| `src/components/PreviewPanel.vue` | 多行/单行预览、分页动画、PNG 切图。 |
-| `src/composables/useSelection.js` | 选区缓存与恢复。 |
-| `src/composables/useStyle.js` | 全局样式状态、默认值、样式转换工具。 |
+| `src/components/RichTextEditor.vue` | 插件主组件，对外暴露 props、事件、ref 方法，并连接工具栏、编辑区、预览区。 |
+| `src/components/ToolbarPanel.vue` | 工具栏 UI，负责编辑插件内部的样式、盒模型和预览配置。 |
+| `src/components/PreviewPanel.vue` | 多行/单行预览、分页动画、PNG 切图，并暴露切图结果给上层。 |
+| `src/composables/useSelection.js` | 每个编辑器实例自己的选区缓存与恢复。 |
+| `src/composables/useStyle.js` | 插件默认配置、props 归一化、样式转换工具。 |
+| `src/lib/index.js` | npm 插件入口，导出组件、插件安装器和默认配置工具。 |
 | `src/utils/normalize.js` | 编辑区 DOM 归一化，减少冗余 `span`。 |
 | `src/components/HelloWorld.vue` | Vite 默认示例组件，当前主流程未使用。 |
 | `public/icons.svg` | 默认示例组件图标资源。 |

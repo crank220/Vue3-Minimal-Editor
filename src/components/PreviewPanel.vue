@@ -1,6 +1,10 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 
+defineOptions({
+  name: 'HdTextEditorPreviewPanel',
+})
+
 // 预览面板负责三件事：
 // 1. 按编辑区当前内容生成多行/单行的实时预览；
 // 2. 在多行模式下控制顺序分页和翻页动画；
@@ -35,6 +39,20 @@ const props = defineProps({
   verticalAlign: {
     type: String,
     default: 'center',
+  },
+  // 允许插件使用方只消费 cut-images 事件，而不在界面里显示切图列表。
+  showCutPreview: {
+    type: Boolean,
+    default: true,
+  },
+  // 这些 class/style 钩子主要给插件使用方做宿主级定制。
+  uiClassMap: {
+    type: Object,
+    default: () => ({}),
+  },
+  uiStyleMap: {
+    type: Object,
+    default: () => ({}),
   },
 })
 
@@ -273,6 +291,7 @@ onBeforeUnmount(() => {
 // 暴露切图方法，供上层点击工具栏按钮时直接调用。
 defineExpose({
   generateCutImages,
+  getCutImagePreviews,
 })
 
 function paginateMultilineContent() {
@@ -740,7 +759,7 @@ function paginateMultilineLines(lines) {
 // 对外暴露的切图入口。切图过程中会锁住按钮，避免重复触发并发任务。
 async function generateCutImages() {
   if (isGeneratingCutImages.value) {
-    return
+    return buildCutImagePayload(cutImagePreviews.value)
   }
 
   isGeneratingCutImages.value = true
@@ -759,12 +778,39 @@ async function generateCutImages() {
       props.previewConfig.format === 'multiline'
         ? await buildMultilineCutImages()
         : await buildSingleLineCutImages()
+    return buildCutImagePayload(cutImagePreviews.value)
   } catch (error) {
     cutImagePreviews.value = []
     cutImageError.value =
       error instanceof Error ? error.message : 'PNG generation failed in the current browser.'
+    throw error instanceof Error
+      ? error
+      : new Error('PNG generation failed in the current browser.')
   } finally {
     isGeneratingCutImages.value = false
+  }
+}
+
+function getCutImagePreviews() {
+  return cutImagePreviews.value.map((image) => ({
+    ...image,
+  }))
+}
+
+function buildCutImagePayload(images) {
+  return {
+    images: images.map((image) => ({
+      ...image,
+    })),
+    format: props.previewConfig.format,
+    boxMetrics: {
+      ...props.boxMetrics,
+    },
+    previewConfig: {
+      ...props.previewConfig,
+    },
+    textAlign: props.textAlign,
+    verticalAlign: props.verticalAlign,
   }
 }
 
@@ -876,9 +922,19 @@ function renderMultilineSliceToCanvas(width, height, page, glyphs) {
     return canvas
   }
 
-  for (let index = page.firstGlyphIndex; index <= page.lastGlyphIndex; index += 1) {
-    drawResolvedGlyph(context, glyphs[index], page)
-  }
+  const pageGlyphs = glyphs.slice(page.firstGlyphIndex, page.lastGlyphIndex + 1)
+  const lineMap = new Map()
+
+  pageGlyphs.forEach((glyph) => {
+    const lineIndex = glyph.lineIndex ?? 0
+    const glyphLine = lineMap.get(lineIndex) ?? []
+    glyphLine.push(glyph)
+    lineMap.set(lineIndex, glyphLine)
+  })
+
+  lineMap.forEach((glyphLine) => {
+    drawResolvedGlyphLine(context, glyphLine, page)
+  })
 
   return canvas
 }
@@ -940,15 +996,20 @@ function collectMultilineGlyphs(root) {
         const fallbackWidth = measureCharacter(character, computedStyle).width
         const previousGlyph = glyphs[glyphs.length - 1]
         const fallbackX = previousGlyph ? previousGlyph.x + previousGlyph.advance : 0
+        const inlineBox = getInlineBox(
+          computedStyle,
+          previousGlyph ? previousGlyph.top : 0,
+          previousGlyph ? previousGlyph.height : computedStyle.lineHeightPx,
+        )
         glyphs.push({
           char: character,
           style: computedStyle,
           x: fallbackX,
           width: fallbackWidth,
           advance: fallbackWidth + computedStyle.letterSpacing,
-          top: previousGlyph ? previousGlyph.top : 0,
-          bottom: previousGlyph ? previousGlyph.bottom : computedStyle.lineHeightPx,
-          height: previousGlyph ? previousGlyph.height : computedStyle.lineHeightPx,
+          top: inlineBox.top,
+          bottom: inlineBox.bottom,
+          height: inlineBox.height,
         })
         range.detach?.()
         continue
@@ -956,6 +1017,7 @@ function collectMultilineGlyphs(root) {
 
       rectList.forEach((rect) => {
         const width = rect.width || measureCharacter(character, computedStyle).width
+        const inlineBox = getInlineBox(computedStyle, rect.top - rootRect.top, rect.height)
 
         glyphs.push({
           char: character,
@@ -963,9 +1025,9 @@ function collectMultilineGlyphs(root) {
           x: rect.left - rootRect.left,
           width,
           advance: width + computedStyle.letterSpacing,
-          top: rect.top - rootRect.top,
-          bottom: rect.bottom - rootRect.top,
-          height: rect.height || computedStyle.lineHeightPx,
+          top: inlineBox.top,
+          bottom: inlineBox.bottom,
+          height: inlineBox.height,
         })
       })
 
@@ -1053,9 +1115,6 @@ function finalizeLine(line) {
 // 把单行或多行中的一整行命令绘制到 canvas 上。
 // clip 参数主要给单行切片使用，只允许可见片段进入最终导出图像。
 function drawLine(context, line, startX, lineTop, clip = null) {
-  const baseline =
-    lineTop + Math.max(0, (line.lineHeight - line.textHeight) / 2) + line.maxAscent
-
   if (clip) {
     context.save()
     context.beginPath()
@@ -1063,8 +1122,27 @@ function drawLine(context, line, startX, lineTop, clip = null) {
     context.clip()
   }
 
-  line.commands.forEach((command) => {
-    drawCharacter(context, command, startX + command.x, baseline, lineTop, line.lineHeight)
+  // 先基于统一的 inline box 合并背景，再绘制文字墨迹。
+  // 这样 editor / preview / cut 在背景高度和文字垂直居中上更接近浏览器真实结果。
+  const resolvedCommands = line.commands.map((command) => {
+    const inlineBox = getInlineBox(command.style, lineTop, line.lineHeight)
+    const baseline =
+      inlineBox.top +
+      Math.max(0, (inlineBox.height - (command.style.ascent + command.style.descent)) / 2) +
+      command.style.ascent
+
+    return {
+      ...command,
+      x: startX + command.x,
+      baseline,
+      inlineBox,
+    }
+  })
+
+  drawBackgroundRuns(context, resolvedCommands)
+
+  resolvedCommands.forEach((command) => {
+    drawCharacterInk(context, command, command.x, command.baseline)
   })
 
   if (clip) {
@@ -1072,38 +1150,49 @@ function drawLine(context, line, startX, lineTop, clip = null) {
   }
 }
 
-// 多行切图使用的字形绘制入口。
-// 它会把“整篇文档中的绝对位置”转换成“当前页内容区中的相对位置”。
-function drawResolvedGlyph(context, glyph, page) {
-  if (!glyph) {
+// 多行切图以整行作为绘制单元，而不是逐字符先画背景。
+// 这样同一行里连续背景色会先被合并，避免导出图出现碎片化底色。
+function drawResolvedGlyphLine(context, glyphs, page) {
+  if (!glyphs?.length) {
     return
   }
 
-  const x = props.boxMetrics.paddingLeft + glyph.x
-  const y = props.boxMetrics.paddingTop + page.offsetY + (glyph.top - page.startTop)
-  const baseline =
-    y + Math.max(0, (glyph.height - (glyph.style.ascent + glyph.style.descent)) / 2) + glyph.style.ascent
+  const resolvedGlyphs = glyphs.map((glyph) => {
+    const inlineBox = getInlineBox(
+      glyph.style,
+      props.boxMetrics.paddingTop + page.offsetY + (glyph.top - page.startTop),
+      glyph.height,
+    )
+    const baseline =
+      inlineBox.top +
+      Math.max(0, (inlineBox.height - (glyph.style.ascent + glyph.style.descent)) / 2) +
+      glyph.style.ascent
 
-  drawCharacter(context, {
-    char: glyph.char,
-    style: glyph.style,
-    width: glyph.width,
-    advance: glyph.advance,
-  }, x, baseline, y, glyph.height)
+    return {
+      char: glyph.char,
+      style: glyph.style,
+      width: glyph.width,
+      advance: glyph.advance,
+      x: props.boxMetrics.paddingLeft + glyph.x,
+      baseline,
+      inlineBox,
+    }
+  })
+
+  drawBackgroundRuns(context, resolvedGlyphs)
+
+  resolvedGlyphs.forEach((glyph) => {
+    drawCharacterInk(context, glyph, glyph.x, glyph.baseline)
+  })
 }
 
-// 实际的单字符绘制函数。
-// 背景色、阴影、描边、填充和下划线都在这里按顺序执行，确保和编辑区显示接近一致。
-function drawCharacter(context, command, x, baseline, lineTop, lineHeight) {
+// 文字背景已经在 drawBackgroundRuns 里按连续片段统一绘制。
+// 这里专门负责文字本身的墨迹层，避免背景重复覆盖。
+function drawCharacterInk(context, command, x, baseline) {
   const { style, char, width, advance } = command
 
   context.font = style.font
   context.textBaseline = 'alphabetic'
-
-  if (style.background) {
-    context.fillStyle = style.background
-    context.fillRect(x, lineTop, Math.max(width, advance), lineHeight)
-  }
 
   if (style.textShadows.length) {
     style.textShadows.forEach((shadow) => {
@@ -1129,6 +1218,63 @@ function drawCharacter(context, command, x, baseline, lineTop, lineHeight) {
     context.moveTo(x, underlineY)
     context.lineTo(x + Math.max(width, advance - style.letterSpacing), underlineY)
     context.stroke()
+  }
+}
+
+function drawBackgroundRuns(context, items) {
+  let currentRun = null
+
+  items.forEach((item) => {
+    if (!item.style.background) {
+      flushBackgroundRun(context, currentRun)
+      currentRun = null
+      return
+    }
+
+    const runLeft = item.x
+    const runRight = item.x + Math.max(item.width, item.advance)
+    const sameRun =
+      currentRun &&
+      currentRun.color === item.style.background &&
+      currentRun.top === item.inlineBox.top &&
+      currentRun.height === item.inlineBox.height &&
+      Math.abs(currentRun.right - runLeft) <= 0.5
+
+    if (!sameRun) {
+      flushBackgroundRun(context, currentRun)
+      currentRun = {
+        color: item.style.background,
+        left: runLeft,
+        right: runRight,
+        top: item.inlineBox.top,
+        height: item.inlineBox.height,
+      }
+      return
+    }
+
+    currentRun.right = runRight
+  })
+
+  flushBackgroundRun(context, currentRun)
+}
+
+function flushBackgroundRun(context, run) {
+  if (!run) {
+    return
+  }
+
+  context.fillStyle = run.color
+  context.fillRect(run.left, run.top, Math.max(0, run.right - run.left), run.height)
+}
+
+function getInlineBox(style, top, height) {
+  const inlineHeight = Math.max(style.lineHeightPx, height || 0)
+  const offsetTop = top - Math.max(0, (inlineHeight - (height || inlineHeight)) / 2)
+
+  return {
+    top: offsetTop,
+    height: inlineHeight,
+    bottom: offsetTop + inlineHeight,
   }
 }
 
@@ -1482,7 +1628,10 @@ function normalizeVerticalAlign(value) {
 </script>
 
 <template>
-  <section class="preview-stage">
+  <section
+    :class="['preview-stage', uiClassMap.previewStage]"
+    :style="uiStyleMap.previewStage"
+  >
     <!-- 预览头部：展示当前输出模式以及页数/切片数摘要。 -->
     <div class="preview-header">
       <div>
@@ -1519,8 +1668,11 @@ function normalizeVerticalAlign(value) {
 
       <!-- 多行可视页栈：静止时只有一层，动画执行时会同时渲染 from/to 两层。 -->
       <div
-        class="preview-viewport preview-page-stack"
-        :style="{ width: `${boxMetrics.width}px`, height: `${boxMetrics.height}px` }"
+        :class="['preview-viewport', 'preview-page-stack', uiClassMap.previewViewport]"
+        :style="[
+          { width: `${boxMetrics.width}px`, height: `${boxMetrics.height}px` },
+          uiStyleMap.previewViewport,
+        ]"
       >
         <div
           v-for="page in activeMultilinePages"
@@ -1582,7 +1734,10 @@ function normalizeVerticalAlign(value) {
       </div>
 
       <!-- 单行可视区：轨道负责移动文本，隐藏测量层负责给出完整宽度。 -->
-      <div class="preview-viewport preview-singleline-viewport" :style="singleLineViewportStyle">
+      <div
+        :class="['preview-viewport', 'preview-singleline-viewport', uiClassMap.previewViewport]"
+        :style="[singleLineViewportStyle, uiStyleMap.previewViewport]"
+      >
         <div class="single-line-track" :style="singleTrackStyle">
           <div
             v-for="copy in singleCopies"
@@ -1607,7 +1762,11 @@ function normalizeVerticalAlign(value) {
   </section>
 
   <!-- PNG 切图结果区：只有在生成中、已有结果或出现错误时才渲染。 -->
-  <section v-if="isGeneratingCutImages || cutImagePreviews.length || cutImageError" class="cut-preview-stage">
+  <section
+    v-if="showCutPreview && (isGeneratingCutImages || cutImagePreviews.length || cutImageError)"
+    :class="['cut-preview-stage', uiClassMap.cutPreviewStage]"
+    :style="uiStyleMap.cutPreviewStage"
+  >
     <div class="preview-header">
       <div>
         <p class="preview-eyebrow">PNG output</p>
@@ -1626,12 +1785,22 @@ function normalizeVerticalAlign(value) {
     <p v-else-if="cutImageError" class="preview-warning">{{ cutImageError }}</p>
 
     <div v-else class="cut-preview-list">
-      <article v-for="image in cutImagePreviews" :key="image.id" class="cut-preview-item">
+      <article
+        v-for="image in cutImagePreviews"
+        :key="image.id"
+        :class="['cut-preview-item', uiClassMap.cutPreviewItem]"
+        :style="uiStyleMap.cutPreviewItem"
+      >
         <div class="cut-preview-meta">
           <span class="meta-chip">{{ image.label }}</span>
           <span class="meta-chip">{{ image.width }} x {{ image.height }}</span>
         </div>
-        <img class="cut-preview-image" :src="image.url" :alt="image.label" />
+        <img
+          :class="['cut-preview-image', uiClassMap.cutPreviewImage]"
+          :style="uiStyleMap.cutPreviewImage"
+          :src="image.url"
+          :alt="image.label"
+        />
       </article>
     </div>
   </section>
@@ -1714,19 +1883,19 @@ h2 {
 /* 所有预览视口都负责裁切超出内容，避免动画层和单行轨道溢出。 */
 .preview-viewport {
   overflow: hidden;
-  border-radius: 22px;
-  border: 1px solid rgba(24, 33, 47, 0.08);
-  background: white;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  border-radius: var(--hdte-surface-radius, 20px);
+  border: 1px solid var(--hdte-surface-border-color, rgba(24, 33, 47, 0.08));
+  background: var(--hdte-surface-background, #ffffff);
+  box-shadow: var(--hdte-surface-inset-shadow, inset 0 1px 0 rgba(255, 255, 255, 0.8));
 }
 
 .preview-page {
   box-sizing: border-box;
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 24px;
-  font-family: 'Source Han Sans SC', 'Source Han Sans CN', 'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  line-height: 1.5;
+  font-size: var(--hdte-surface-font-size, 24px);
+  font-family: var(--hdte-font-stack, 'Source Han Sans SC', 'Source Han Sans CN', 'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif);
+  line-height: var(--hdte-surface-line-height, 1.5);
 }
 
 /* 多行模式通过绝对定位叠放页层，再用 transform 执行顺序翻页动画。 */
@@ -1738,7 +1907,7 @@ h2 {
   position: absolute;
   inset: 0;
   overflow: hidden;
-  background: white;
+  background: var(--hdte-surface-background, #ffffff);
   will-change: transform;
 }
 
@@ -1754,10 +1923,10 @@ h2 {
   box-sizing: border-box;
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 24px;
-  font-family: 'Source Han Sans SC', 'Source Han Sans CN', 'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  line-height: 1.5;
-  background: white;
+  font-size: var(--hdte-surface-font-size, 24px);
+  font-family: var(--hdte-font-stack, 'Source Han Sans SC', 'Source Han Sans CN', 'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif);
+  line-height: var(--hdte-surface-line-height, 1.5);
+  background: var(--hdte-surface-background, #ffffff);
 }
 
 .preview-page-copy {
@@ -1778,9 +1947,9 @@ h2 {
   display: flex;
   align-items: center;
   white-space: nowrap;
-  font-size: 24px;
-  font-family: 'Source Han Sans SC', 'Source Han Sans CN', 'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  line-height: 1.5;
+  font-size: var(--hdte-surface-font-size, 24px);
+  font-family: var(--hdte-font-stack, 'Source Han Sans SC', 'Source Han Sans CN', 'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif);
+  line-height: var(--hdte-surface-line-height, 1.5);
 }
 
 .single-line-track {
@@ -1869,10 +2038,10 @@ h2 {
   display: block;
   max-width: 100%;
   height: auto;
-  border-radius: 18px;
-  border: 1px solid rgba(24, 33, 47, 0.08);
-  background: white;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  border-radius: var(--hdte-surface-radius, 20px);
+  border: 1px solid var(--hdte-surface-border-color, rgba(24, 33, 47, 0.08));
+  background: var(--hdte-surface-background, #ffffff);
+  box-shadow: var(--hdte-surface-inset-shadow, inset 0 1px 0 rgba(255, 255, 255, 0.8));
 }
 
 /* 窄屏下收紧卡片边距，避免预览区域过度占用横向空间。 */

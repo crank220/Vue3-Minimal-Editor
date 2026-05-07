@@ -1,18 +1,39 @@
 {
-  "name": "canvas-text",
-  "private": true,
-  "version": "0.0.0",
+  "name": "hd-text-editor",
+  "version": "0.1.1",
   "type": "module",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "main": "./dist/index.umd.cjs",
+  "module": "./dist/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.umd.cjs"
+    },
+    "./style.css": "./dist/style.css"
+  },
+  "sideEffects": [
+    "**/*.css"
+  ],
   "scripts": {
     "dev": "vite --host",
     "build": "vite build",
-    "preview": "vite preview"
+    "build:lib": "vite build --mode library",
+    "preview": "vite preview",
+    "publish": "npm run build:lib && npm publish --ignore-scripts --registry http://192.168.90.222:66"
   },
-  "dependencies": {
-    "vue": "^3.5.32"
+  "publishConfig": {
+    "registry": "http://192.168.90.222:66"
+  },
+  "peerDependencies": {
+    "vue": "^3.5.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.4",
-    "vite": "^6.4.0"
+    "vite": "^6.4.0",
+    "vue": "^3.5.32"
   }
 }
