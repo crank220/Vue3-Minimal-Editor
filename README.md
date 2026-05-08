@@ -179,6 +179,43 @@ const screenshots = await editorRef.value.screenshot()
 | `file` | PNG `File` 对象，可直接上传。 |
 | `url` | 用于本地预览的 data URL。 |
 
+## 完整 demo 页面
+
+本地 demo 位于 `src/App.vue`，用于验证插件的完整接入面：
+
+| 区域 | 覆盖能力 |
+| --- | --- |
+| 入参面板 | 直接编辑 `html`，并外部修改 `annotations.editorBox`、`annotations.style`、`annotations.preview`。 |
+| 事件面板 | 记录 `update:html`、`update:annotations`、`screenshot`、`screenshots` 和实例方法返回结果。 |
+| 插槽示例 | 使用 `annotation-actions` 自定义粗体/斜体/下划线区域，使用 `annotation-preview` 自定义预览与截图区域。 |
+| 预设按钮 | 在多行分页与单行滚动两种受控入参之间切换，验证外部替换 `html` 与 `annotations` 的联动。 |
+
+核心接入形式如下：
+
+```vue
+<HdTextEditor
+  ref="editorRef"
+  v-model:html="demoHtml"
+  v-model:annotations="demoAnnotations"
+  @update:html="handleHtmlUpdate"
+  @update:annotations="handleAnnotationsUpdate"
+  @screenshot="handleScreenshot"
+  @screenshots="handleScreenshots"
+>
+  <template #annotation-actions="{ style }">
+    <button type="button" @click="style.bold = !style.bold">B</button>
+  </template>
+
+  <template #annotation-preview="{ preview, cutImages }">
+    <select v-model="preview.format">
+      <option value="multiline">Multiline</option>
+      <option value="singleline">Single line</option>
+    </select>
+    <button type="button" @click="cutImages">Cut PNG</button>
+  </template>
+</HdTextEditor>
+```
+
 ## 目录结构
 
 ```text
@@ -220,7 +257,7 @@ Vue3-Minimal-Editor
 | --- | --- |
 | `src/main.js` | 应用入口，加载全局样式并挂载根组件。 |
 | `src/index.js` | npm 插件入口，导出 `HdTextEditor` 组件、安装函数和标注状态工厂。 |
-| `src/App.vue` | 根组件，只承载主编辑器。 |
+| `src/App.vue` | 完整 demo 页面，演示入参、事件和 slot 接入。 |
 | `src/style.css` | 全局视觉基线和全局控件样式。 |
 | `src/components/RichTextEditor.vue` | 编辑主控组件，连接工具栏、编辑区、预览区。 |
 | `src/components/ToolbarPanel.vue` | 工具栏 UI，负责修改共享状态。 |
@@ -691,10 +728,12 @@ canvas.toDataURL('image/png')
 ### 1. 页面初始化流程
 
 1. `main.js` 挂载应用
-2. `App.vue` 渲染 `RichTextEditor.vue`
-3. `RichTextEditor.vue` 初始化默认状态
-4. `onMounted` 同步一次预览源和滚动状态
-5. `PreviewPanel.vue` 监听到内容和配置，立即进行分页/测量
+2. `App.vue` 渲染完整 demo，并通过 `v-model:html` / `v-model:annotations` 接管入参
+3. `App.vue` 监听 `update:html`、`update:annotations`、`screenshot`、`screenshots` 事件并记录事件流水
+4. `App.vue` 通过 `annotation-actions` / `annotation-preview` 插槽替换部分工具栏分组
+5. `RichTextEditor.vue` 初始化默认状态
+6. `onMounted` 同步一次预览源和滚动状态
+7. `PreviewPanel.vue` 监听到内容和配置，立即进行分页/测量
 
 ### 2. 文本选中并改样式流程
 
