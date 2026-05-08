@@ -106,19 +106,58 @@ export const DEFAULT_PREVIEW_STATE = {
   singleLineSeamless: true,
 }
 
+// 创建统一的“标注”入参对象。
+// 插件对外只暴露这一份对象，内部再拆成 style / editorBox / preview 三个稳定分区。
+export function createTextEditorAnnotations(source = {}) {
+  const style = source.style ?? source.styleState ?? {}
+  const editorBox = source.editorBox ?? source.editorBoxState ?? {}
+  const preview = source.preview ?? source.previewState ?? {}
+
+  return {
+    style: {
+      ...DEFAULT_STYLE_STATE,
+      ...style,
+    },
+    editorBox: {
+      ...DEFAULT_EDITOR_BOX_STATE,
+      ...editorBox,
+    },
+    preview: {
+      ...DEFAULT_PREVIEW_STATE,
+      ...preview,
+    },
+  }
+}
+
+// 输出给外层 v-model 时始终返回一份普通对象，避免把内部响应式对象泄露出去。
+export function cloneTextEditorAnnotations(source = {}) {
+  return createTextEditorAnnotations(source)
+}
+
+// 父组件更新 annotations 入参时，用这个函数把外部值合并进内部响应式状态。
+export function patchTextEditorAnnotations(target, source = {}) {
+  const nextAnnotations = createTextEditorAnnotations(source)
+
+  Object.assign(target.style, nextAnnotations.style)
+  Object.assign(target.editorBox, nextAnnotations.editorBox)
+  Object.assign(target.preview, nextAnnotations.preview)
+}
+
+const defaultAnnotations = createTextEditorAnnotations()
+
 // 工具栏直接绑定的响应式文本样式状态。
 export const styleState = reactive({
-  ...DEFAULT_STYLE_STATE,
+  ...defaultAnnotations.style,
 })
 
 // 编辑区尺寸与 padding 的响应式状态。
 export const editorBoxState = reactive({
-  ...DEFAULT_EDITOR_BOX_STATE,
+  ...defaultAnnotations.editorBox,
 })
 
 // 预览模式、翻页和切图参数的响应式状态。
 export const previewState = reactive({
-  ...DEFAULT_PREVIEW_STATE,
+  ...defaultAnnotations.preview,
 })
 
 // 把当前工具栏状态转换成可直接写入 DOM 的样式对象。

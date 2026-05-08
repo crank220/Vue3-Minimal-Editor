@@ -3,10 +3,22 @@
 // 负责维护所有样式输入入口，并把最终配置写入共享状态。
 // 具体如何把这些状态应用到选区，由 RichTextEditor 负责。
 import { computed } from 'vue'
-import { FONT_FAMILY_OPTIONS, editorBoxState, previewState, styleState } from '../composables/useStyle'
+import { FONT_FAMILY_OPTIONS } from '../composables/useStyle'
+
+const props = defineProps({
+  // 所有工具栏“标注”属性统一由父级传入，便于插件使用方整体做 v-model 绑定。
+  annotations: {
+    type: Object,
+    required: true,
+  },
+})
 
 // 将切图动作抛给父组件，由父组件调用预览区的导出逻辑。
 const emit = defineEmits(['cut-images'])
+
+const styleState = computed(() => props.annotations.style)
+const editorBoxState = computed(() => props.annotations.editorBox)
+const previewState = computed(() => props.annotations.preview)
 
 // 基础文字控制选项。
 const fontSizes = [16, 20, 24, 28, 32, 40, 48]
@@ -57,20 +69,42 @@ const singleLineModes = [
 const singleLineSpeedOptions = [1, 2, 3, 4, 5, 6, 7, 8, 9]
 const lineHeightPresets = [1, 1.2, 1.5, 1.8, 2, 2.4]
 
+// 插槽拿到的是同一份内部响应式标注对象，自定义 UI 可以直接做双向绑定。
+const slotScope = computed(() => ({
+  annotations: props.annotations,
+  style: styleState.value,
+  editorBox: editorBoxState.value,
+  preview: previewState.value,
+  options: {
+    fontSizes,
+    alignments,
+    verticalAlignments,
+    strokePositions,
+    previewFormats,
+    pageTransitionDirections,
+    pageTransitionOptions,
+    singleLineModes,
+    singleLineSpeedOptions,
+    lineHeightPresets,
+    fontFamilies: FONT_FAMILY_OPTIONS,
+  },
+  cutImages: emitCutImages,
+}))
+
 // 背景色在 UI 中总是使用颜色选择器展示。
 // 当实际值是 transparent 时，这里临时回显为白色，避免原生颜色框无法显示“透明”。
 const backgroundValue = computed({
-  get: () => (styleState.background === 'transparent' ? '#ffffff' : styleState.background),
+  get: () => (styleState.value.background === 'transparent' ? '#ffffff' : styleState.value.background),
   set: (value) => {
-    styleState.background = value
+    styleState.value.background = value
   },
 })
 
 // 行高会被滑杆与预设按钮共同修改，因此用计算属性统一做约束。
 const lineHeightValue = computed({
-  get: () => clampLineHeight(styleState.lineHeight),
+  get: () => clampLineHeight(styleState.value.lineHeight),
   set: (value) => {
-    styleState.lineHeight = clampLineHeight(value)
+    styleState.value.lineHeight = clampLineHeight(value)
   },
 })
 
@@ -86,12 +120,18 @@ function clampLineHeight(value) {
 
   return Math.min(3, Math.max(1, Number(number.toFixed(1))))
 }
+
+function emitCutImages() {
+  emit('cut-images')
+}
 </script>
 
 <template>
   <!-- 工具栏按“文字样式 / 编辑区尺寸 / 预览配置”分组展示。 -->
   <div class="toolbar">
+    <slot name="toolbar" v-bind="slotScope">
     <!-- 常用强调样式按钮。 -->
+    <slot name="annotation-actions" v-bind="slotScope">
     <div class="toolbar-group">
       <button
         type="button"
@@ -118,8 +158,10 @@ function clampLineHeight(value) {
         U
       </button>
     </div>
+    </slot>
 
     <!-- 字体与字号配置。 -->
+    <slot name="annotation-font" v-bind="slotScope">
     <div class="toolbar-group field-group">
       <label>
         Font family
@@ -137,8 +179,10 @@ function clampLineHeight(value) {
         </select>
       </label>
     </div>
+    </slot>
 
     <!-- 文本颜色与背景色配置。 -->
+    <slot name="annotation-fill" v-bind="slotScope">
     <div class="toolbar-group field-group">
       <label>
         Text color
@@ -150,8 +194,10 @@ function clampLineHeight(value) {
         <input v-model="backgroundValue" type="color" />
       </label>
     </div>
+    </slot>
 
     <!-- 描边颜色、粗细与位置配置。 -->
+    <slot name="annotation-stroke" v-bind="slotScope">
     <div class="toolbar-group field-group">
       <label>
         Stroke color
@@ -172,8 +218,10 @@ function clampLineHeight(value) {
         </select>
       </label>
     </div>
+    </slot>
 
     <!-- 字间距与行高配置。 -->
+    <slot name="annotation-spacing" v-bind="slotScope">
     <div class="toolbar-group field-group">
       <label>
         Letter spacing
@@ -208,8 +256,10 @@ function clampLineHeight(value) {
         </div>
       </label>
     </div>
+    </slot>
 
     <!-- 水平对齐与垂直对齐配置。 -->
+    <slot name="annotation-align" v-bind="slotScope">
     <div class="toolbar-group field-group">
       <label>
         Align
@@ -229,8 +279,10 @@ function clampLineHeight(value) {
         </select>
       </label>
     </div>
+    </slot>
 
     <!-- 编辑区尺寸与四向内边距配置。 -->
+    <slot name="annotation-box" v-bind="slotScope">
     <div class="toolbar-group field-group">
       <label>
         Editor width
@@ -262,8 +314,10 @@ function clampLineHeight(value) {
         <input v-model.number="editorBoxState.paddingLeft" type="number" min="0" step="1" />
       </label>
     </div>
+    </slot>
 
     <!-- 预览模式、动画参数和切图参数配置。 -->
+    <slot name="annotation-preview" v-bind="slotScope">
     <div class="toolbar-group field-group">
       <label>
         Preview format
@@ -345,8 +399,10 @@ function clampLineHeight(value) {
         </label>
       </template>
 
-      <button type="button" @mousedown.prevent @click="emit('cut-images')">Cut PNG</button>
+      <button type="button" @mousedown.prevent @click="emitCutImages">Cut PNG</button>
     </div>
+    </slot>
+    </slot>
   </div>
 </template>
 

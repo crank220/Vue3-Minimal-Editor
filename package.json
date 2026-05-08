@@ -1,18 +1,39 @@
 {
-  "name": "canvas-text",
-  "private": true,
-  "version": "0.0.0",
+  "name": "hd-text-editor",
+  "version": "0.1.0",
+  "description": "Vue 3 text editor, preview, pagination and PNG screenshot plugin.",
   "type": "module",
+  "main": "./dist/hd-text-editor.umd.cjs",
+  "module": "./dist/hd-text-editor.js",
+  "exports": {
+    ".": {
+      "import": "./dist/hd-text-editor.js",
+      "require": "./dist/hd-text-editor.umd.cjs"
+    },
+    "./style.css": "./dist/hd-text-editor.css"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "dev": "vite --host",
-    "build": "vite build",
-    "preview": "vite preview"
+    "build": "vite build --config vite.lib.config.js",
+    "build:demo": "vite build",
+    "build:lib": "vite build --config vite.lib.config.js",
+    "preview": "vite preview",
+    "prepublishOnly": "npm run build:lib",
+    "publish": "npm publish --registry=http://192.168.90.222:66/"
   },
-  "dependencies": {
-    "vue": "^3.5.32"
+  "publishConfig": {
+    "registry": "http://192.168.90.222:66/"
+  },
+  "peerDependencies": {
+    "vue": "^3.5.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.4",
-    "vite": "^6.4.0"
+    "vite": "^6.4.0",
+    "vue": "^3.5.32"
   }
 }

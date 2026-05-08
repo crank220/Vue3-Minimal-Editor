@@ -4,27 +4,54 @@
 // 1. 管理 contenteditable 编辑区；
 // 2. 把工具栏状态即时应用到选中文本；
 // 3. 将编辑内容同步给预览区与切图区。
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import PreviewPanel from './PreviewPanel.vue'
 import ToolbarPanel from './ToolbarPanel.vue'
+import { DEFAULT_EDITOR_HTML } from '../constants/defaultContent'
 import { saveRange, getRange, setRange } from '../composables/useSelection'
 import {
   DEFAULT_EDITOR_BOX_STATE,
   DEFAULT_PREVIEW_STATE,
   DEFAULT_STYLE_STATE,
-  editorBoxState,
-  previewState,
+  cloneTextEditorAnnotations,
+  createTextEditorAnnotations,
+  patchTextEditorAnnotations,
   resolveFontFamily,
-  styleState,
   styleToCss,
 } from '../composables/useStyle'
 import { normalize } from '../utils/normalize'
+
+defineOptions({
+  name: 'HdTextEditor',
+})
+
+const props = defineProps({
+  // html 是插件的受控内容入口，父组件可通过 v-model:html 双向绑定。
+  html: {
+    type: String,
+    default: DEFAULT_EDITOR_HTML,
+  },
+  // annotations 是统一的“标注”入口，内部包含文本样式、盒模型与预览切图配置。
+  annotations: {
+    type: Object,
+    default: () => createTextEditorAnnotations(),
+  },
+})
+
+const emit = defineEmits(['update:html', 'update:annotations', 'screenshot', 'screenshots'])
+
+const annotationsState = reactive(createTextEditorAnnotations(props.annotations))
+const styleState = annotationsState.style
+const editorBoxState = annotationsState.editorBox
+const previewState = annotationsState.preview
 
 // 编辑区滚动容器、可编辑内容根节点、预览组件实例以及若干联动状态。
 const editorRef = ref(null)
 const editorContentRef = ref(null)
 const previewPanelRef = ref(null)
 const isSyncingToolbar = ref(false)
+let isApplyingHtmlFromProps = false
+let isPatchingAnnotationsFromProps = false
 const previewSource = ref({
   html: '',
   singleLineHtml: '',
@@ -34,6 +61,16 @@ const editorScrollState = ref({
   scrollHeight: 0,
   scrollTop: 0,
 })
+
+// 传给自定义插槽的最小能力集合，使用方可以替换整条工具栏或部分标注分组。
+const editorSlotScope = computed(() => ({
+  annotations: annotationsState,
+  style: styleState,
+  editorBox: editorBoxState,
+  preview: previewState,
+  screenshot,
+  requestCutImages,
+}))
 
 // 将输入状态标准化为可直接用于布局计算的数字盒模型。
 const editorBoxMetrics = computed(() => ({
@@ -84,6 +121,25 @@ const editorScrollThumbStyle = computed(() => {
     transform: `translateY(${thumbTop}px)`,
   }
 })
+
+function applyHtmlToEditor(html) {
+  // 父组件传入新的 html 时，只替换编辑区内容本身；
+  // 后续预览、切图和 v-model 回抛仍统一走 syncPreviewSource。
+  if (!editorContentRef.value) {
+    return
+  }
+
+  const nextHtml = String(html ?? '')
+
+  if (editorContentRef.value.innerHTML !== nextHtml) {
+    clearSelectionPreview()
+    setRange(null)
+    editorContentRef.value.innerHTML = nextHtml
+  }
+
+  syncPreviewSource()
+  syncEditorScrollState()
+}
 
 function saveSelection() {
   // 在鼠标抬起、键盘选择或重新聚焦后缓存选区。
@@ -403,7 +459,8 @@ function toHex(value) {
 
 function syncPreviewSource() {
   // 将编辑区 HTML 同步给预览区。
-  // 单行预览需要把换行转成空格占位，避免真正换行。
+  // 单行预览需要把换行转成空格占位，避免真正换行；
+  // 同时把最新 HTML 通过 v-model:html 回抛给插件引入处。
   if (!editorContentRef.value) {
     return
   }
@@ -413,6 +470,10 @@ function syncPreviewSource() {
   previewSource.value = {
     html,
     singleLineHtml: html.replace(/<br\s*\/?>/gi, '<span> </span>'),
+  }
+
+  if (!isApplyingHtmlFromProps && html !== props.html) {
+    emit('update:html', html)
   }
 }
 
@@ -464,16 +525,86 @@ function normalizeSpacing(value, fallback) {
   return Math.max(0, Math.round(number))
 }
 
-function requestCutImages() {
-  // 通过子组件暴露的方法触发切图。
-  previewPanelRef.value?.generateCutImages?.()
+async function screenshot() {
+  // 插件公开的截图方法：触发预览组件生成 PNG，
+  // 并把每张图的索引、宽高和 File 对象抛给引入处。
+  const images = (await previewPanelRef.value?.generateCutImages?.()) ?? []
+  const payloads = images.map((image) => ({
+    index: image.index,
+    width: image.width,
+    height: image.height,
+    file: image.file,
+    url: image.url,
+    id: image.id,
+    label: image.label,
+  }))
+
+  payloads.forEach((payload) => emit('screenshot', payload))
+  emit('screenshots', payloads)
+
+  return payloads
 }
 
-onMounted(() => {
-  // 初次挂载时同步一次预览内容与滚动状态。
-  syncPreviewSource()
-  syncEditorScrollState()
+function requestCutImages() {
+  // 工具栏按钮和外部实例方法共用同一条截图链路。
+  screenshot()
+}
+
+defineExpose({
+  screenshot,
+  generateScreenshots: screenshot,
+  requestCutImages,
 })
+
+onMounted(() => {
+  // 初次挂载时先把外部 html 入参写入 contenteditable，再建立预览同源数据。
+  isApplyingHtmlFromProps = true
+  applyHtmlToEditor(props.html)
+  isApplyingHtmlFromProps = false
+})
+
+watch(
+  () => props.html,
+  (nextHtml) => {
+    // 外部主动替换 html 时，编辑区、预览区和切图区都以这份新内容为准。
+    const normalizedHtml = String(nextHtml ?? '')
+    const currentHtml = sanitizePreviewHtml(editorContentRef.value?.innerHTML ?? '')
+
+    if (normalizedHtml === currentHtml) {
+      return
+    }
+
+    isApplyingHtmlFromProps = true
+    applyHtmlToEditor(normalizedHtml)
+    isApplyingHtmlFromProps = false
+  },
+)
+
+watch(
+  () => props.annotations,
+  (nextAnnotations) => {
+    // 外部更新统一标注对象时，合并回内部三段响应式状态。
+    isPatchingAnnotationsFromProps = true
+    patchTextEditorAnnotations(annotationsState, nextAnnotations)
+    nextTick(() => {
+      isPatchingAnnotationsFromProps = false
+    })
+  },
+  { deep: true },
+)
+
+watch(
+  annotationsState,
+  () => {
+    // 插件内部任一标注字段变化，都通过 v-model:annotations 回抛完整快照。
+    if (isPatchingAnnotationsFromProps) {
+      return
+    }
+
+    emit('update:annotations', cloneTextEditorAnnotations(annotationsState))
+  },
+  { deep: true },
+)
 
 watch(
   previewState,
@@ -538,7 +669,34 @@ watch(
 
     <section class="workspace-card">
       <!-- 工具栏只改状态，不直接操作内容。 -->
-      <ToolbarPanel @cut-images="requestCutImages" />
+      <slot name="toolbar" v-bind="editorSlotScope">
+        <ToolbarPanel :annotations="annotationsState" @cut-images="requestCutImages">
+          <template v-if="$slots['annotation-actions']" #annotation-actions="slotProps">
+            <slot name="annotation-actions" v-bind="slotProps" />
+          </template>
+          <template v-if="$slots['annotation-font']" #annotation-font="slotProps">
+            <slot name="annotation-font" v-bind="slotProps" />
+          </template>
+          <template v-if="$slots['annotation-fill']" #annotation-fill="slotProps">
+            <slot name="annotation-fill" v-bind="slotProps" />
+          </template>
+          <template v-if="$slots['annotation-stroke']" #annotation-stroke="slotProps">
+            <slot name="annotation-stroke" v-bind="slotProps" />
+          </template>
+          <template v-if="$slots['annotation-spacing']" #annotation-spacing="slotProps">
+            <slot name="annotation-spacing" v-bind="slotProps" />
+          </template>
+          <template v-if="$slots['annotation-align']" #annotation-align="slotProps">
+            <slot name="annotation-align" v-bind="slotProps" />
+          </template>
+          <template v-if="$slots['annotation-box']" #annotation-box="slotProps">
+            <slot name="annotation-box" v-bind="slotProps" />
+          </template>
+          <template v-if="$slots['annotation-preview']" #annotation-preview="slotProps">
+            <slot name="annotation-preview" v-bind="slotProps" />
+          </template>
+        </ToolbarPanel>
+      </slot>
 
       <!-- 编辑舞台负责承载编辑区本体。 -->
       <div class="editor-stage">
@@ -558,33 +716,7 @@ watch(
               @keyup="saveSelection"
               @focus="saveSelection"
               @input="onInput"
-            >
-一个基于 `Vue 3 + Vite` 的文本编辑、实时预览、分页播放与 PNG 切图工具。
-
-这个项目不是通用型富文本编辑器，而是一个“排版可控、预览可控、切图可控”的前端文本引擎。它直接建立在浏览器原生能力之上：`contenteditable`、`Range`、`Selection`、DOM 归一化、Canvas 渲染，不依赖 Quill、Slate、Tiptap 等第三方编辑器框架。
-
-项目当前关注的核心目标有 4 个：
-
-1. 选区稳定：工具栏操作不应打断文本选中，也不应因为输入数值而丢失选区。
-2. 结构稳定：编辑区 DOM 必须尽量保持简单、可预测，避免重复嵌套和样式碎片化。
-3. 预览稳定：预览区应当尽量复用编辑区的同源内容和同源盒模型。
-4. 导出稳定：切图不依赖 `foreignObject`，避免 canvas 被污染导致 PNG 导出失败。
-
-## 项目能力
-
-当前实现的能力包括：
-
-1. 在 `contenteditable` 编辑区中选择文本，并立即应用工具栏样式。
-2. 支持字体、字号、文字颜色、背景色、粗体、斜体、下划线。
-3. 支持字间距、行高、描边颜色、描边宽度、描边位置。
-4. 支持文本水平对齐、垂直对齐。
-5. 支持编辑区宽度、高度、四向内边距设置。
-6. 支持多行预览和单行预览两种模式。
-7. 多行模式支持静态翻页和方向翻页动画。
-8. 单行模式支持静态、左移、右移、无缝循环。
-9. 支持按预览结果生成 PNG，并在页面下方查看切图预览。
-10. 支持自定义编辑区悬浮滚动条，鼠标移入时显示，且不挤压内容。
-            </div>
+            ></div>
           </div>
 
           <div v-if="hasEditorScroll" class="editor-scrollbar">

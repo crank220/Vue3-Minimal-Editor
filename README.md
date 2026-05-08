@@ -25,6 +25,10 @@
 8. 单行模式支持静态、左移、右移、无缝循环。
 9. 支持按预览结果生成 PNG，切图与预览共享同一份分页结果，并在页面下方查看切图预览。
 10. 支持自定义编辑区悬浮滚动条，鼠标移入时显示，且不挤压内容。
+11. 支持以 `hd-text-editor` npm 插件方式发布和引入。
+12. 支持通过统一的 `annotations` 入参管理全部“标注”属性：文本样式、编辑区盒模型、预览与切图配置。
+13. 支持 `v-model:html` 与 `v-model:annotations` 双向绑定，标注属性变更会同步写回 HTML。
+14. 支持 `screenshot()` 实例方法，触发后向引入处抛出截图索引、宽高与 `File` 对象。
 
 ## 技术栈
 
@@ -45,17 +49,135 @@ npm install
 npm run dev
 ```
 
-生产构建：
+默认构建（npm 插件产物）：
 
 ```bash
 npm run build
 ```
 
+`build:lib` 是同一条库构建链路的显式别名：
+
+```bash
+npm run build:lib
+```
+
+发布到内网 npm 仓库：
+
+```bash
+npm run publish
+```
+
 本地预览构建结果：
 
 ```bash
+npm run build:demo
 npm run preview
 ```
+
+## npm 插件用法
+
+插件名为 `hd-text-editor`，构建产物默认发布到 `http://192.168.90.222:66/`。
+
+安装后全局注册：
+
+```js
+import { createApp } from 'vue'
+import HdTextEditor from 'hd-text-editor'
+import 'hd-text-editor/style.css'
+
+createApp(App).use(HdTextEditor).mount('#app')
+```
+
+按需引入组件：
+
+```vue
+<script setup>
+import { ref } from 'vue'
+import { HdTextEditor, createTextEditorAnnotations } from 'hd-text-editor'
+import 'hd-text-editor/style.css'
+
+const editorRef = ref(null)
+const html = ref('<span style="font-size: 24px;">示例文本</span>')
+const annotations = ref(createTextEditorAnnotations())
+
+function handleScreenshot(payload) {
+  console.log(payload.index, payload.width, payload.height, payload.file)
+}
+
+async function capture() {
+  const files = await editorRef.value.screenshot()
+  console.log(files)
+}
+</script>
+
+<template>
+  <HdTextEditor
+    ref="editorRef"
+    v-model:html="html"
+    v-model:annotations="annotations"
+    @screenshot="handleScreenshot"
+  />
+</template>
+```
+
+### `annotations` 统一入参
+
+`annotations` 是所有“标注”属性的唯一入口，内部固定分为三段：
+
+| 字段 | 作用 |
+| --- | --- |
+| `annotations.style` | 字体、字号、颜色、背景、粗斜体、下划线、字间距、行高、描边、水平/垂直对齐。 |
+| `annotations.editorBox` | 编辑区宽高和四向 padding。 |
+| `annotations.preview` | 多行/单行预览、翻页动画、停留时长、单行速度、切图宽度。 |
+
+当用户在工具栏或自定义插槽中修改 `annotations.style` 并命中当前缓存选区时，编辑区 DOM 会立即重写对应内联样式，随后通过 `update:html` 回抛最新 HTML。
+
+### 自定义插槽
+
+组件提供整条工具栏插槽和分组插槽。插槽会收到同一份响应式 `annotations`，因此自定义控件可以直接做双向绑定。
+
+| 插槽名 | 默认内容 |
+| --- | --- |
+| `toolbar` | 替换整条工具栏。 |
+| `annotation-actions` | 粗体、斜体、下划线。 |
+| `annotation-font` | 字体、字号。 |
+| `annotation-fill` | 文字颜色、背景色。 |
+| `annotation-stroke` | 描边颜色、宽度、位置。 |
+| `annotation-spacing` | 字间距、行高。 |
+| `annotation-align` | 水平对齐、垂直对齐。 |
+| `annotation-box` | 编辑区宽高与四向 padding。 |
+| `annotation-preview` | 预览模式、动画、切图按钮。 |
+
+示例：
+
+```vue
+<HdTextEditor v-model:html="html" v-model:annotations="annotations">
+  <template #annotation-actions="{ style }">
+    <div class="my-tools">
+      <button type="button" @click="style.bold = !style.bold">B</button>
+      <button type="button" @click="style.italic = !style.italic">I</button>
+    </div>
+  </template>
+</HdTextEditor>
+```
+
+### 截图方法
+
+通过组件实例调用 `screenshot()` 会沿用当前预览切图链路生成 PNG。每张图片都会触发一次 `screenshot` 事件，同时方法本身返回完整数组。
+
+```js
+const screenshots = await editorRef.value.screenshot()
+```
+
+单张截图事件载荷：
+
+| 字段 | 说明 |
+| --- | --- |
+| `index` | 截图序号，从 `0` 开始。 |
+| `width` | 图片宽度。 |
+| `height` | 图片高度。 |
+| `file` | PNG `File` 对象，可直接上传。 |
+| `url` | 用于本地预览的 data URL。 |
 
 ## 目录结构
 
@@ -77,13 +199,17 @@ Vue3-Minimal-Editor
 │  ├─ composables/
 │  │  ├─ useSelection.js
 │  │  └─ useStyle.js
+│  ├─ constants/
+│  │  └─ defaultContent.js
 │  ├─ utils/
 │  │  └─ normalize.js
 │  ├─ App.vue
+│  ├─ index.js
 │  ├─ main.js
 │  └─ style.css
 ├─ index.html
 ├─ package.json
+├─ vite.lib.config.js
 ├─ vite.config.js
 └─ README.md
 ```
@@ -93,6 +219,7 @@ Vue3-Minimal-Editor
 | 路径 | 职责 |
 | --- | --- |
 | `src/main.js` | 应用入口，加载全局样式并挂载根组件。 |
+| `src/index.js` | npm 插件入口，导出 `HdTextEditor` 组件、安装函数和标注状态工厂。 |
 | `src/App.vue` | 根组件，只承载主编辑器。 |
 | `src/style.css` | 全局视觉基线和全局控件样式。 |
 | `src/components/RichTextEditor.vue` | 编辑主控组件，连接工具栏、编辑区、预览区。 |
@@ -100,9 +227,11 @@ Vue3-Minimal-Editor
 | `src/components/PreviewPanel.vue` | 多行/单行预览、分页动画、PNG 切图。 |
 | `src/composables/useSelection.js` | 选区缓存与恢复。 |
 | `src/composables/useStyle.js` | 全局样式状态、默认值、样式转换工具。 |
+| `src/constants/defaultContent.js` | 插件未传入 `html` 时使用的默认内容。 |
 | `src/utils/normalize.js` | 编辑区 DOM 归一化，减少冗余 `span`。 |
 | `src/components/HelloWorld.vue` | Vite 默认示例组件，当前主流程未使用。 |
 | `public/icons.svg` | 默认示例组件图标资源。 |
+| `vite.lib.config.js` | npm 插件库构建配置，产出 `hd-text-editor` 的 ESM/UMD 包与样式文件。 |
 
 ## 架构总览
 
@@ -201,6 +330,20 @@ canvas.toDataURL('image/png')
 ```
 
 ## 状态模型
+
+### 0. `annotations`
+
+`annotations` 是插件对外暴露的统一“标注”入参，定义和默认值来自 `createTextEditorAnnotations()`。
+
+```js
+{
+  style: {},
+  editorBox: {},
+  preview: {}
+}
+```
+
+组件内部仍然按 `style`、`editorBox`、`preview` 三段处理，但对引入方只需要维护这一份对象。`v-model:annotations` 会在任意标注字段变化时回抛完整快照。
 
 ### 1. `styleState`
 
@@ -313,6 +456,8 @@ canvas.toDataURL('image/png')
 | `syncPreviewSource()` | 把编辑区 HTML 同步给预览区 |
 | `syncEditorScrollState()` | 更新悬浮滚动条所需的尺寸和偏移 |
 | `requestCutImages()` | 调用预览组件暴露的切图方法 |
+| `screenshot()` | 插件公开截图方法，返回截图数组并抛出每张图的索引、宽高和 `File` |
+| `applyHtmlToEditor()` | 接收外部 `html` 入参并写入编辑区，再同步预览源 |
 
 ### 样式应用策略
 

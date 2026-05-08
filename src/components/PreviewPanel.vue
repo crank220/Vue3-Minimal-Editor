@@ -740,7 +740,7 @@ function paginateMultilineLines(lines) {
 // 对外暴露的切图入口。切图过程中会锁住按钮，避免重复触发并发任务。
 async function generateCutImages() {
   if (isGeneratingCutImages.value) {
-    return
+    return cutImagePreviews.value
   }
 
   isGeneratingCutImages.value = true
@@ -755,17 +755,51 @@ async function generateCutImages() {
       measureSingleLineBounds()
     }
 
-    cutImagePreviews.value =
+    const images =
       props.previewConfig.format === 'multiline'
         ? await buildMultilineCutImages()
         : await buildSingleLineCutImages()
+
+    cutImagePreviews.value = images.map(createCutImagePayload)
+    return cutImagePreviews.value
   } catch (error) {
     cutImagePreviews.value = []
     cutImageError.value =
       error instanceof Error ? error.message : 'PNG generation failed in the current browser.'
+    return []
   } finally {
     isGeneratingCutImages.value = false
   }
+}
+
+function createCutImagePayload(image, index) {
+  // 预览区保留 dataURL 用于页面展示，同时为插件事件补充 File 对象。
+  return {
+    ...image,
+    index,
+    file: dataUrlToFile(image.url, `${image.id}.png`),
+  }
+}
+
+function dataUrlToFile(dataUrl, fileName) {
+  // 外部引入方通常需要真正的 File；如果运行环境没有 File 构造器，则退化为带 name 的 Blob。
+  const [header, payload = ''] = String(dataUrl).split(',')
+  const mimeType = header.match(/^data:([^;]+);/)?.[1] ?? 'image/png'
+  const binary = window.atob(payload)
+  const bytes = new Uint8Array(binary.length)
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+
+  const blob = new Blob([bytes], { type: mimeType })
+
+  if (typeof File === 'function') {
+    return new File([blob], fileName, { type: mimeType })
+  }
+
+  blob.name = fileName
+  return blob
 }
 
 async function buildMultilineCutImages() {
