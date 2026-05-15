@@ -8,18 +8,22 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import PreviewPanel from './PreviewPanel.vue'
 import ToolbarPanel from './ToolbarPanel.vue'
 import { DEFAULT_EDITOR_HTML } from '../constants/defaultContent'
-import { saveRange, getRange, setRange } from '../composables/useSelection'
+import { createSelectionStore } from '../composables/useSelection'
 import {
   DEFAULT_EDITOR_BOX_STATE,
-  DEFAULT_PREVIEW_STATE,
   DEFAULT_STYLE_STATE,
+  MAX_EDITOR_DIMENSION,
+  MAX_EDITOR_PADDING,
+  MIN_EDITOR_DIMENSION,
   cloneTextEditorAnnotations,
   createTextEditorAnnotations,
+  normalizePreviewConfig,
   patchTextEditorAnnotations,
   resolveFontFamily,
   styleToCss,
 } from '../composables/useStyle'
 import { normalize } from '../utils/normalize'
+import { sanitizeEditorHtml } from '../utils/sanitizeHtml'
 
 defineOptions({
   name: 'HdTextEditor',
@@ -50,7 +54,7 @@ const editorRef = ref(null)
 const editorContentRef = ref(null)
 const previewPanelRef = ref(null)
 const isSyncingToolbar = ref(false)
-let isApplyingHtmlFromProps = false
+const selectionStore = createSelectionStore()
 let isPatchingAnnotationsFromProps = false
 const previewSource = ref({
   html: '',
@@ -129,11 +133,11 @@ function applyHtmlToEditor(html) {
     return
   }
 
-  const nextHtml = String(html ?? '')
+  const nextHtml = sanitizePreviewHtml(html)
 
   if (editorContentRef.value.innerHTML !== nextHtml) {
     clearSelectionPreview()
-    setRange(null)
+    selectionStore.setRange(null)
     editorContentRef.value.innerHTML = nextHtml
   }
 
@@ -145,7 +149,7 @@ function saveSelection() {
   // 在鼠标抬起、键盘选择或重新聚焦后缓存选区。
   // 同时刷新工具栏回显、预览 HTML 和滚动状态。
   clearSelectionPreview()
-  saveRange(editorContentRef.value)
+  selectionStore.saveRange(editorContentRef.value)
   syncToolbarFromSelection()
   syncPreviewSource()
   syncEditorScrollState()
@@ -155,7 +159,7 @@ function applyStyleToSelection() {
   // 将当前工具栏状态应用到缓存选区。
   // 如果命中的是同一个 span，则直接改样式；
   // 如果是跨节点选区，则抽取内容后重新包裹一个 span。
-  const range = getRange()?.cloneRange()
+  const range = selectionStore.getRange(editorContentRef.value)?.cloneRange()
   if (!range || range.collapsed) {
     return
   }
@@ -176,7 +180,7 @@ function applyStyleToSelection() {
 
   const nextRange = document.createRange()
   nextRange.selectNodeContents(span)
-  setRange(nextRange)
+  selectionStore.setRange(nextRange)
   setSelectionPreview(span)
 
   nextTick(() => {
@@ -196,8 +200,9 @@ function onInput() {
   // 3. 同步工具栏与预览数据。
   nextTick(() => {
     if (editorContentRef.value) {
+      sanitizeEditorContent()
       normalize(editorContentRef.value)
-      saveRange(editorContentRef.value)
+      selectionStore.saveRange(editorContentRef.value)
       syncToolbarFromSelection()
       syncPreviewSource()
       syncEditorScrollState()
@@ -207,7 +212,7 @@ function onInput() {
 
 function syncToolbarFromSelection() {
   // 从当前选区命中的节点反向读取计算样式，并写回工具栏状态。
-  const range = getRange()
+  const range = selectionStore.getRange(editorContentRef.value)
   if (!editorContentRef.value || !range) {
     return
   }
@@ -472,16 +477,27 @@ function syncPreviewSource() {
     singleLineHtml: html.replace(/<br\s*\/?>/gi, '<span> </span>'),
   }
 
-  if (!isApplyingHtmlFromProps && html !== props.html) {
+  if (html !== props.html) {
     emit('update:html', html)
   }
 }
 
 function sanitizePreviewHtml(value) {
-  // 预览与切图不需要选区高亮，因此同步前移除临时标记属性。
-  return String(value ?? '')
-    .replace(/\sdata-selection-preview="true"/g, '')
-    .replace(/\sdata-selection-preview='true'/g, '')
+  // 预览与切图只允许编辑器支持的 span/br 结构和白名单样式。
+  return sanitizeEditorHtml(value)
+}
+
+function sanitizeEditorContent() {
+  if (!editorContentRef.value) {
+    return
+  }
+
+  const sanitizedHtml = sanitizePreviewHtml(editorContentRef.value.innerHTML)
+  if (editorContentRef.value.innerHTML !== sanitizedHtml) {
+    clearSelectionPreview()
+    selectionStore.setRange(null)
+    editorContentRef.value.innerHTML = sanitizedHtml
+  }
 }
 
 function syncEditorScrollState() {
@@ -506,23 +522,23 @@ function normalizeVerticalAlign(value) {
 }
 
 function normalizeDimension(value, fallback) {
-  // 宽高最小限制为 120，避免编辑区被缩成不可用尺寸。
+  // 宽高限制在可用范围内，避免编辑区过小或生成超大画布。
   const number = Number.parseFloat(value)
   if (!Number.isFinite(number)) {
     return fallback
   }
 
-  return Math.max(120, Math.round(number))
+  return Math.min(MAX_EDITOR_DIMENSION, Math.max(MIN_EDITOR_DIMENSION, Math.round(number)))
 }
 
 function normalizeSpacing(value, fallback) {
-  // 内边距统一做非负整数约束。
+  // 内边距统一做非负整数约束，并限制极端值对布局的影响。
   const number = Number.parseFloat(value)
   if (!Number.isFinite(number)) {
     return fallback
   }
 
-  return Math.max(0, Math.round(number))
+  return Math.min(MAX_EDITOR_PADDING, Math.max(0, Math.round(number)))
 }
 
 async function screenshot() {
@@ -558,25 +574,24 @@ defineExpose({
 
 onMounted(() => {
   // 初次挂载时先把外部 html 入参写入 contenteditable，再建立预览同源数据。
-  isApplyingHtmlFromProps = true
   applyHtmlToEditor(props.html)
-  isApplyingHtmlFromProps = false
 })
 
 watch(
   () => props.html,
   (nextHtml) => {
     // 外部主动替换 html 时，编辑区、预览区和切图区都以这份新内容为准。
-    const normalizedHtml = String(nextHtml ?? '')
+    const normalizedHtml = sanitizePreviewHtml(nextHtml)
     const currentHtml = sanitizePreviewHtml(editorContentRef.value?.innerHTML ?? '')
 
     if (normalizedHtml === currentHtml) {
+      if (normalizedHtml !== String(nextHtml ?? '')) {
+        emit('update:html', normalizedHtml)
+      }
       return
     }
 
-    isApplyingHtmlFromProps = true
     applyHtmlToEditor(normalizedHtml)
-    isApplyingHtmlFromProps = false
   },
 )
 
@@ -610,21 +625,7 @@ watch(
   previewState,
   () => {
     // 统一约束预览相关的数值输入范围，避免非法值进入后续布局逻辑。
-    previewState.pageStaySeconds = Math.min(
-      9999,
-      Math.max(1, Number.parseInt(previewState.pageStaySeconds, 10) || DEFAULT_PREVIEW_STATE.pageStaySeconds),
-    )
-    previewState.cutImageWidth = Math.min(
-      65536,
-      Math.max(
-        1,
-        Number.parseInt(previewState.cutImageWidth, 10) || editorBoxState.width || DEFAULT_EDITOR_BOX_STATE.width,
-      ),
-    )
-    previewState.singleLineSpeed = Math.min(
-      9,
-      Math.max(1, Number.parseInt(previewState.singleLineSpeed, 10) || DEFAULT_PREVIEW_STATE.singleLineSpeed),
-    )
+    Object.assign(previewState, normalizePreviewConfig(previewState))
   },
   { deep: true },
 )

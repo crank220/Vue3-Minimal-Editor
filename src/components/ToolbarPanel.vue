@@ -3,7 +3,13 @@
 // 负责维护所有样式输入入口，并把最终配置写入共享状态。
 // 具体如何把这些状态应用到选区，由 RichTextEditor 负责。
 import { computed } from 'vue'
-import { FONT_FAMILY_OPTIONS } from '../composables/useStyle'
+import {
+  FONT_FAMILY_OPTIONS,
+  MAX_CANVAS_DIMENSION,
+  MAX_EDITOR_DIMENSION,
+  MAX_EDITOR_PADDING,
+  MIN_EDITOR_DIMENSION,
+} from '../composables/useStyle'
 
 const props = defineProps({
   // 所有工具栏“标注”属性统一由父级传入，便于插件使用方整体做 v-model 绑定。
@@ -286,32 +292,44 @@ function emitCutImages() {
     <div class="toolbar-group field-group">
       <label>
         Editor width
-        <input v-model.number="editorBoxState.width" type="number" min="120" step="1" />
+        <input
+          v-model.number="editorBoxState.width"
+          type="number"
+          :min="MIN_EDITOR_DIMENSION"
+          :max="MAX_EDITOR_DIMENSION"
+          step="1"
+        />
       </label>
 
       <label>
         Editor height
-        <input v-model.number="editorBoxState.height" type="number" min="120" step="1" />
+        <input
+          v-model.number="editorBoxState.height"
+          type="number"
+          :min="MIN_EDITOR_DIMENSION"
+          :max="MAX_EDITOR_DIMENSION"
+          step="1"
+        />
       </label>
 
       <label>
         Padding top
-        <input v-model.number="editorBoxState.paddingTop" type="number" min="0" step="1" />
+        <input v-model.number="editorBoxState.paddingTop" type="number" min="0" :max="MAX_EDITOR_PADDING" step="1" />
       </label>
 
       <label>
         Padding right
-        <input v-model.number="editorBoxState.paddingRight" type="number" min="0" step="1" />
+        <input v-model.number="editorBoxState.paddingRight" type="number" min="0" :max="MAX_EDITOR_PADDING" step="1" />
       </label>
 
       <label>
         Padding bottom
-        <input v-model.number="editorBoxState.paddingBottom" type="number" min="0" step="1" />
+        <input v-model.number="editorBoxState.paddingBottom" type="number" min="0" :max="MAX_EDITOR_PADDING" step="1" />
       </label>
 
       <label>
         Padding left
-        <input v-model.number="editorBoxState.paddingLeft" type="number" min="0" step="1" />
+        <input v-model.number="editorBoxState.paddingLeft" type="number" min="0" :max="MAX_EDITOR_PADDING" step="1" />
       </label>
     </div>
     </slot>
@@ -370,7 +388,7 @@ function emitCutImages() {
             v-model.number="previewState.cutImageWidth"
             type="number"
             min="1"
-            max="65536"
+            :max="MAX_CANVAS_DIMENSION"
             step="1"
           />
         </label>

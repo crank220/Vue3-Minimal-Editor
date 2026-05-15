@@ -5,7 +5,11 @@
 // 3. 使用 annotation-actions / annotation-preview 插槽替换部分默认工具栏。
 import { computed, ref } from 'vue'
 import HdTextEditor from './components/RichTextEditor.vue'
-import { createTextEditorAnnotations } from './composables/useStyle'
+import {
+  MAX_EDITOR_DIMENSION,
+  MIN_EDITOR_DIMENSION,
+  createTextEditorAnnotations,
+} from './composables/useStyle'
 
 const DEMO_HTML = [
   '<span style="font-size: 32px; font-weight: bold; color: #0f172a; background: #d9f99d; line-height: 1.4;">HD Text Editor Demo</span>',
@@ -199,11 +203,21 @@ function resetSlotStyle(style) {
         <div class="input-grid">
           <label>
             Width
-            <input v-model.number="demoAnnotations.editorBox.width" type="number" min="120" />
+            <input
+              v-model.number="demoAnnotations.editorBox.width"
+              type="number"
+              :min="MIN_EDITOR_DIMENSION"
+              :max="MAX_EDITOR_DIMENSION"
+            />
           </label>
           <label>
             Height
-            <input v-model.number="demoAnnotations.editorBox.height" type="number" min="120" />
+            <input
+              v-model.number="demoAnnotations.editorBox.height"
+              type="number"
+              :min="MIN_EDITOR_DIMENSION"
+              :max="MAX_EDITOR_DIMENSION"
+            />
           </label>
           <label>
             Font size

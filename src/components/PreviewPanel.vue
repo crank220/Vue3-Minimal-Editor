@@ -1,5 +1,8 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { MAX_CANVAS_DIMENSION, MAX_CANVAS_PIXELS } from '../composables/useStyle'
+import { parseCssTextShadow } from '../utils/cssTextShadow'
+import { sanitizeEditorHtml } from '../utils/sanitizeHtml'
 
 // 预览面板负责三件事：
 // 1. 按编辑区当前内容生成多行/单行的实时预览；
@@ -147,8 +150,8 @@ const multilineFlowStyle = computed(() => ({
 }))
 
 // 空内容时用不换行空格兜底，避免测量层高度和切图结果变成 0。
-const safeContentHtml = computed(() => props.contentHtml || '&nbsp;')
-const safeSingleLineHtml = computed(() => props.singleLineHtml || '&nbsp;')
+const safeContentHtml = computed(() => sanitizeEditorHtml(props.contentHtml) || '&nbsp;')
+const safeSingleLineHtml = computed(() => sanitizeEditorHtml(props.singleLineHtml) || '&nbsp;')
 
 // 多行页码与切图宽度派生值。
 const visiblePageCount = computed(() => multilinePages.value.length)
@@ -197,7 +200,7 @@ const activeMultilinePages = computed(() => {
 
 // 单行模式下的宽度、切片数和无缝滚动副本数量。
 const singleEffectiveWidth = computed(() => Math.min(singleRawWidth.value, 65536))
-const singleSliceCount = computed(() => Math.max(1, Math.ceil(singleEffectiveWidth.value / 8096)))
+const singleSliceCount = computed(() => Math.max(1, Math.ceil(singleEffectiveWidth.value / effectiveCutImageWidth.value)))
 const singleIsTruncated = computed(() => singleRawWidth.value > 65536)
 const singleCopies = computed(() => (props.previewConfig.singleLineSeamless ? [0, 1, 2] : [0]))
 
@@ -306,7 +309,7 @@ function paginateMultilineContent() {
 // 把富文本 HTML 拆成“逐字符 token”序列，方便后续做精确的 canvas 排版和切图。
 function tokenizeHtml(html) {
   const container = document.createElement('div')
-  container.innerHTML = html
+  container.innerHTML = sanitizeEditorHtml(html)
 
   const tokens = []
   walkNodes(container, '', tokens)
@@ -375,68 +378,6 @@ function serializeStyleEntries(styleText) {
       return property && value ? [property, value] : null
     })
     .filter(Boolean)
-}
-
-// 把 token 列表重新拼回 HTML。这个能力主要用于中间态调试和后续排版扩展。
-function renderTokens(tokens) {
-  let html = ''
-  let buffer = ''
-  let currentStyle = null
-
-  tokens.forEach((token) => {
-    if (token.type === 'br') {
-      html += flushBufferedHtml(buffer, currentStyle)
-      buffer = ''
-      currentStyle = null
-      html += '<br>'
-      return
-    }
-
-    if (token.style !== currentStyle) {
-      html += flushBufferedHtml(buffer, currentStyle)
-      buffer = ''
-      currentStyle = token.style
-    }
-
-    buffer += escapeHtml(token.value)
-  })
-
-  html += flushBufferedHtml(buffer, currentStyle)
-
-  return html
-}
-
-// 把当前缓冲区中的纯文本包装成带样式的 span，减少重复拼接逻辑。
-function flushBufferedHtml(buffer, styleText) {
-  if (!buffer) {
-    return ''
-  }
-
-  if (!styleText) {
-    return buffer
-  }
-
-  return `<span style="${escapeAttribute(styleText)}">${buffer}</span>`
-}
-
-// HTML 转义，避免普通文本字符在模板字符串里被当成标签解析。
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-}
-
-// 属性值转义，避免双引号等字符破坏 style 属性结构。
-function escapeAttribute(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-}
-
-// 判断测量层是否产生溢出。后续如需更精细分页策略，可以复用这个判断。
-function isMeasureOverflowing(element) {
-  return element.scrollHeight > element.clientHeight || element.scrollWidth > element.clientWidth
 }
 
 // 多行自动翻页控制：只在多页且当前模式为 multiline 时启动。
@@ -858,35 +799,6 @@ async function buildSingleLineCutImages() {
   return images
 }
 
-// 通用版 canvas 排版入口。当前主要为后续扩展保留，核心思想是：
-// 先算出内容区域尺寸，再根据水平/垂直对齐把每一行依次画上去。
-function renderLayoutToCanvas({
-  width,
-  height,
-  layout,
-  paddingTop,
-  paddingRight,
-  paddingBottom,
-  paddingLeft,
-  textAlign,
-  verticalAlign,
-}) {
-  const canvas = createCanvas(width, height)
-  const context = getCanvasContext(canvas)
-  const contentWidth = Math.max(1, width - paddingLeft - paddingRight)
-  const contentHeight = Math.max(0, height - paddingTop - paddingBottom)
-  const offsetY = getVerticalOffset(verticalAlign, contentHeight, layout.contentHeight)
-  let lineTop = paddingTop + offsetY
-
-  layout.lines.forEach((line) => {
-    const startX = paddingLeft + getHorizontalOffset(textAlign, contentWidth, line.width)
-    drawLine(context, line, startX, lineTop)
-    lineTop += line.lineHeight
-  })
-
-  return canvas
-}
-
 // 渲染单行切片。通过负向位移把目标片段移动到画布可见区域，再配合 clip 裁掉两侧内容。
 function renderSingleLineSliceToCanvas({ width, height, sliceStart, totalWidth, layout }) {
   const canvas = createCanvas(width, height)
@@ -919,9 +831,25 @@ function renderMultilineSliceToCanvas(width, height, page, glyphs) {
 
 // 创建指定尺寸的离屏 canvas。
 function createCanvas(width, height) {
+  const canvasWidth = Math.max(1, Math.round(width))
+  const canvasHeight = Math.max(1, Math.round(height))
+
+  // 浏览器对 canvas 单轴和总像素都有实际限制，提前抛错比生成空白图更容易定位。
+  if (canvasWidth * canvasHeight > MAX_CANVAS_PIXELS) {
+    throw new Error(
+      `Canvas size ${canvasWidth} x ${canvasHeight} exceeds the ${MAX_CANVAS_PIXELS} pixel safety limit.`,
+    )
+  }
+
+  if (canvasWidth > MAX_CANVAS_DIMENSION || canvasHeight > MAX_CANVAS_DIMENSION) {
+    throw new Error(
+      `Canvas size ${canvasWidth} x ${canvasHeight} exceeds the ${MAX_CANVAS_DIMENSION}px single-axis safety limit.`,
+    )
+  }
+
   const canvas = document.createElement('canvas')
-  canvas.width = Math.max(1, Math.round(width))
-  canvas.height = Math.max(1, Math.round(height))
+  canvas.width = canvasWidth
+  canvas.height = canvasHeight
   return canvas
 }
 
@@ -1141,8 +1069,7 @@ function drawCharacter(context, command, x, baseline, lineTop, lineHeight) {
 
   if (style.textShadows.length) {
     style.textShadows.forEach((shadow) => {
-      context.fillStyle = shadow.color
-      context.fillText(char, x + shadow.x, baseline + shadow.y)
+      drawTextShadow(context, shadow, char, x, baseline, Math.max(width, advance))
     })
   }
 
@@ -1164,6 +1091,27 @@ function drawCharacter(context, command, x, baseline, lineTop, lineHeight) {
     context.lineTo(x + Math.max(width, advance - style.letterSpacing), underlineY)
     context.stroke()
   }
+}
+
+function drawTextShadow(context, shadow, char, x, baseline, glyphWidth) {
+  context.save()
+  context.fillStyle = shadow.color
+
+  if (shadow.blur > 0) {
+    // 模糊阴影需要借助 canvas shadowBlur。把源字形画到画布外，
+    // 再用 shadowOffset 把阴影挪回目标位置，避免源字形本体泄漏到切片里。
+    const hiddenSourceX = -context.canvas.width - glyphWidth - shadow.blur - 10
+    context.shadowColor = shadow.color
+    context.shadowBlur = shadow.blur
+    context.shadowOffsetX = x + shadow.x - hiddenSourceX
+    context.shadowOffsetY = shadow.y
+    context.fillText(char, hiddenSourceX, baseline)
+    context.restore()
+    return
+  }
+
+  context.fillText(char, x + shadow.x, baseline + shadow.y)
+  context.restore()
 }
 
 // 返回 canvas 渲染使用的基础样式对象。
@@ -1294,19 +1242,6 @@ function getTextMeasureContext() {
   return textMeasureContext
 }
 
-// 根据 left / center / right 计算一行在内容区中的起始偏移量。
-function getHorizontalOffset(textAlign, contentWidth, lineWidth) {
-  if (textAlign === 'center') {
-    return Math.max(0, (contentWidth - lineWidth) / 2)
-  }
-
-  if (textAlign === 'right') {
-    return Math.max(0, contentWidth - lineWidth)
-  }
-
-  return 0
-}
-
 // 根据垂直对齐方式计算整块内容在视口内的纵向偏移。
 function getVerticalOffset(verticalAlign, availableHeight, contentHeight) {
   if (verticalAlign === 'center') {
@@ -1328,7 +1263,7 @@ function parseStrokeStyle(styleEntries) {
     parsePx(shorthand.split(/\s+/)[0], 0)
   const color =
     styleEntries.get('-webkit-text-stroke-color') ||
-    shorthand.replace(/^[\d.\-]+px\s*/, '').trim() ||
+    shorthand.replace(/^[\d.-]+px\s*/, '').trim() ||
     'transparent'
 
   return {
@@ -1339,26 +1274,13 @@ function parseStrokeStyle(styleEntries) {
 
 // 把 text-shadow 解析成 canvas 可直接绘制的阴影数组。
 function parseTextShadows(value) {
-  if (!value || value === 'none') {
-    return []
-  }
-
-  return String(value)
-    .split(',')
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-    .map((entry) => {
-      const parts = entry.split(/\s+/)
-      if (parts.length < 4) {
-        return null
-      }
-
-      return {
-        x: Number.parseFloat(parts[0]) || 0,
-        y: Number.parseFloat(parts[1]) || 0,
-        color: parts.slice(3).join(' ') || '#000000',
-      }
-    })
+  return parseCssTextShadow(value)
+    .map((shadow) => ({
+      x: Number.parseFloat(shadow.x) || 0,
+      y: Number.parseFloat(shadow.y) || 0,
+      blur: Math.max(0, Number.parseFloat(shadow.blur) || 0),
+      color: shadow.color || '#000000',
+    }))
     .filter(Boolean)
 }
 
@@ -1493,7 +1415,7 @@ function clampCutImageWidth(value) {
     return Math.max(1, props.boxMetrics.width)
   }
 
-  return Math.min(65536, Math.max(1, number))
+  return Math.min(MAX_CANVAS_DIMENSION, Math.max(1, number))
 }
 
 function clampSingleLineSpeed(value) {
@@ -1629,7 +1551,7 @@ function normalizeVerticalAlign(value) {
       </div>
 
       <p class="preview-note">
-        Single line width is capped at 65536px and sliced in blocks of 8096px.
+        Single line width is capped at 65536px. Each PNG slice is capped at {{ MAX_CANVAS_DIMENSION }}px.
       </p>
       <p class="preview-note">
         Effective width {{ singleEffectiveWidth }}px, slices {{ singleSliceCount }}.

@@ -6,7 +6,7 @@ export function normalize(root) {
   }
 
   // 归一化会循环执行，直到本轮不再产生任何结构变化为止。
-  let changed = false
+  let changed
 
   do {
     changed = false
@@ -23,7 +23,7 @@ function mergeSameSpan(root) {
   const spans = [...root.querySelectorAll('span')]
 
   spans.forEach((span) => {
-    if (!span.isConnected) {
+    if (!root.contains(span)) {
       return
     }
 

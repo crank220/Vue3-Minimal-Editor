@@ -65,6 +65,34 @@ export const FONT_FAMILY_OPTIONS = [
   },
 ]
 
+// 所有外部可写入编辑器的尺寸、样式数值都在这里设安全边界。
+// 这些上限既保护 DOM 布局，也避免后续 canvas 切图创建超大位图。
+export const MIN_EDITOR_DIMENSION = 120
+export const MAX_EDITOR_DIMENSION = 4096
+export const MAX_EDITOR_PADDING = 2048
+export const MAX_CANVAS_PIXELS = 16777216
+export const MAX_CANVAS_DIMENSION = 8192
+export const MIN_TEXT_FONT_SIZE = 1
+export const MAX_TEXT_FONT_SIZE = 512
+export const MIN_LETTER_SPACING = -10
+export const MAX_LETTER_SPACING = 30
+export const MIN_LINE_HEIGHT = 1
+export const MAX_LINE_HEIGHT = 3
+export const MAX_STROKE_WIDTH = 12
+export const MAX_FONT_FAMILY_LENGTH = 240
+export const MAX_TEXT_SHADOW_COUNT = 144
+export const MAX_TEXT_SHADOW_OFFSET = 64
+
+const STROKE_POSITIONS = new Set(['inside', 'center', 'outside'])
+const TEXT_ALIGNMENTS = new Set(['left', 'center', 'right', 'justify'])
+const VERTICAL_ALIGNMENTS = new Set(['flex-start', 'center', 'flex-end'])
+const PREVIEW_FORMATS = new Set(['multiline', 'singleline'])
+const PAGE_TRANSITION_DIRECTIONS = new Set(['static', 'left', 'right', 'up', 'down'])
+const SINGLE_LINE_MODES = new Set(['static', 'left', 'right'])
+const MAX_PAGE_TRANSITION_MS = 9999
+const MAX_PAGE_STAY_SECONDS = 9999
+const MAX_SINGLE_LINE_SPEED = 9
+
 // 当前选中文本的默认样式。
 export const DEFAULT_STYLE_STATE = {
   fontSize: 24,
@@ -109,23 +137,102 @@ export const DEFAULT_PREVIEW_STATE = {
 // 创建统一的“标注”入参对象。
 // 插件对外只暴露这一份对象，内部再拆成 style / editorBox / preview 三个稳定分区。
 export function createTextEditorAnnotations(source = {}) {
-  const style = source.style ?? source.styleState ?? {}
-  const editorBox = source.editorBox ?? source.editorBoxState ?? {}
-  const preview = source.preview ?? source.previewState ?? {}
+  const annotations = toPlainObject(source)
+  const style = annotations.style ?? annotations.styleState ?? {}
+  const editorBox = annotations.editorBox ?? annotations.editorBoxState ?? {}
+  const preview = annotations.preview ?? annotations.previewState ?? {}
 
   return {
-    style: {
-      ...DEFAULT_STYLE_STATE,
-      ...style,
-    },
-    editorBox: {
-      ...DEFAULT_EDITOR_BOX_STATE,
-      ...editorBox,
-    },
-    preview: {
-      ...DEFAULT_PREVIEW_STATE,
-      ...preview,
-    },
+    style: normalizeTextStyle(style),
+    editorBox: normalizeEditorBox(editorBox),
+    preview: normalizePreviewConfig(preview),
+  }
+}
+
+export function normalizeTextStyle(source = {}) {
+  const style = toPlainObject(source)
+
+  // annotations 可能来自宿主应用或持久化数据，进入 DOM 前先收敛到编辑器支持的样式集合。
+  return {
+    fontSize: clampNumber(style.fontSize, DEFAULT_STYLE_STATE.fontSize, MIN_TEXT_FONT_SIZE, MAX_TEXT_FONT_SIZE, {
+      integer: true,
+    }),
+    fontFamily: normalizeFontFamilyValue(style.fontFamily, DEFAULT_STYLE_STATE.fontFamily),
+    color: normalizeCssTextValue(style.color, DEFAULT_STYLE_STATE.color),
+    background: normalizeCssTextValue(style.background, DEFAULT_STYLE_STATE.background),
+    bold: normalizeBoolean(style.bold, DEFAULT_STYLE_STATE.bold),
+    italic: normalizeBoolean(style.italic, DEFAULT_STYLE_STATE.italic),
+    underline: normalizeBoolean(style.underline, DEFAULT_STYLE_STATE.underline),
+    letterSpacing: clampNumber(
+      style.letterSpacing,
+      DEFAULT_STYLE_STATE.letterSpacing,
+      MIN_LETTER_SPACING,
+      MAX_LETTER_SPACING,
+    ),
+    lineHeight: clampNumber(style.lineHeight, DEFAULT_STYLE_STATE.lineHeight, MIN_LINE_HEIGHT, MAX_LINE_HEIGHT),
+    strokeColor: normalizeCssTextValue(style.strokeColor, DEFAULT_STYLE_STATE.strokeColor),
+    strokeWidth: clampNumber(style.strokeWidth, DEFAULT_STYLE_STATE.strokeWidth, 0, MAX_STROKE_WIDTH),
+    strokePosition: STROKE_POSITIONS.has(style.strokePosition)
+      ? style.strokePosition
+      : DEFAULT_STYLE_STATE.strokePosition,
+    textAlign: TEXT_ALIGNMENTS.has(style.textAlign) ? style.textAlign : DEFAULT_STYLE_STATE.textAlign,
+    verticalAlign: VERTICAL_ALIGNMENTS.has(style.verticalAlign)
+      ? style.verticalAlign
+      : DEFAULT_STYLE_STATE.verticalAlign,
+  }
+}
+
+export function normalizeEditorBox(source = {}) {
+  const editorBox = toPlainObject(source)
+
+  // 编辑区尺寸会参与预览测量和截图画布尺寸计算，因此这里统一做边界保护。
+  return {
+    width: clampNumber(editorBox.width, DEFAULT_EDITOR_BOX_STATE.width, MIN_EDITOR_DIMENSION, MAX_EDITOR_DIMENSION, {
+      integer: true,
+    }),
+    height: clampNumber(editorBox.height, DEFAULT_EDITOR_BOX_STATE.height, MIN_EDITOR_DIMENSION, MAX_EDITOR_DIMENSION, {
+      integer: true,
+    }),
+    paddingTop: clampNumber(editorBox.paddingTop, DEFAULT_EDITOR_BOX_STATE.paddingTop, 0, MAX_EDITOR_PADDING, {
+      integer: true,
+    }),
+    paddingRight: clampNumber(editorBox.paddingRight, DEFAULT_EDITOR_BOX_STATE.paddingRight, 0, MAX_EDITOR_PADDING, {
+      integer: true,
+    }),
+    paddingBottom: clampNumber(editorBox.paddingBottom, DEFAULT_EDITOR_BOX_STATE.paddingBottom, 0, MAX_EDITOR_PADDING, {
+      integer: true,
+    }),
+    paddingLeft: clampNumber(editorBox.paddingLeft, DEFAULT_EDITOR_BOX_STATE.paddingLeft, 0, MAX_EDITOR_PADDING, {
+      integer: true,
+    }),
+  }
+}
+
+export function normalizePreviewConfig(source = {}) {
+  const preview = toPlainObject(source)
+
+  // 预览参数直接影响自动翻页、切片数量和动画速度，统一归一化后再写入响应式状态。
+  return {
+    format: PREVIEW_FORMATS.has(preview.format) ? preview.format : DEFAULT_PREVIEW_STATE.format,
+    pageTransitionDirection: PAGE_TRANSITION_DIRECTIONS.has(preview.pageTransitionDirection)
+      ? preview.pageTransitionDirection
+      : DEFAULT_PREVIEW_STATE.pageTransitionDirection,
+    pageTransitionMs: clampNumber(preview.pageTransitionMs, DEFAULT_PREVIEW_STATE.pageTransitionMs, 0, MAX_PAGE_TRANSITION_MS, {
+      integer: true,
+    }),
+    pageStaySeconds: clampNumber(preview.pageStaySeconds, DEFAULT_PREVIEW_STATE.pageStaySeconds, 1, MAX_PAGE_STAY_SECONDS, {
+      integer: true,
+    }),
+    cutImageWidth: clampNumber(preview.cutImageWidth, DEFAULT_PREVIEW_STATE.cutImageWidth, 1, MAX_CANVAS_DIMENSION, {
+      integer: true,
+    }),
+    singleLineMode: SINGLE_LINE_MODES.has(preview.singleLineMode)
+      ? preview.singleLineMode
+      : DEFAULT_PREVIEW_STATE.singleLineMode,
+    singleLineSpeed: clampNumber(preview.singleLineSpeed, DEFAULT_PREVIEW_STATE.singleLineSpeed, 1, MAX_SINGLE_LINE_SPEED, {
+      integer: true,
+    }),
+    singleLineSeamless: normalizeBoolean(preview.singleLineSeamless, DEFAULT_PREVIEW_STATE.singleLineSeamless),
   }
 }
 
@@ -162,18 +269,19 @@ export const previewState = reactive({
 
 // 把当前工具栏状态转换成可直接写入 DOM 的样式对象。
 export function styleToCss(state) {
-  const strokeStyle = getStrokeStyle(state)
+  const normalizedState = normalizeTextStyle(state)
+  const strokeStyle = getStrokeStyle(normalizedState)
 
   return {
-    fontSize: `${state.fontSize}px`,
-    fontFamily: state.fontFamily,
-    color: state.color,
-    background: state.background,
-    fontWeight: state.bold ? 'bold' : 'normal',
-    fontStyle: state.italic ? 'italic' : 'normal',
-    textDecoration: state.underline ? 'underline' : 'none',
-    letterSpacing: `${state.letterSpacing}px`,
-    lineHeight: state.lineHeight,
+    fontSize: `${normalizedState.fontSize}px`,
+    fontFamily: normalizedState.fontFamily,
+    color: normalizedState.color,
+    background: normalizedState.background,
+    fontWeight: normalizedState.bold ? 'bold' : 'normal',
+    fontStyle: normalizedState.italic ? 'italic' : 'normal',
+    textDecoration: normalizedState.underline ? 'underline' : 'none',
+    letterSpacing: `${normalizedState.letterSpacing}px`,
+    lineHeight: normalizedState.lineHeight,
     WebkitTextStroke: strokeStyle.WebkitTextStroke,
     textShadow: strokeStyle.textShadow,
   }
@@ -195,7 +303,7 @@ export function resolveFontFamily(value) {
 // outside 使用多方向 text-shadow 近似外描边；
 // inside 使用更细的描边做视觉近似。
 function getStrokeStyle(state) {
-  const width = Number.parseFloat(state.strokeWidth)
+  const width = clampNumber(state.strokeWidth, DEFAULT_STYLE_STATE.strokeWidth, 0, MAX_STROKE_WIDTH)
 
   if (!Number.isFinite(width) || width <= 0) {
     return {
@@ -222,6 +330,70 @@ function getStrokeStyle(state) {
     WebkitTextStroke: `${width}px ${state.strokeColor}`,
     textShadow: 'none',
   }
+}
+
+function clampNumber(value, fallback, min, max, options = {}) {
+  const number = Number.parseFloat(value)
+  if (!Number.isFinite(number)) {
+    return fallback
+  }
+
+  const clamped = Math.min(max, Math.max(min, number))
+  const rounded = options.integer ? Math.round(clamped) : Number(clamped.toFixed(2))
+  return Object.is(rounded, -0) ? 0 : rounded
+}
+
+function toPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+
+  return value
+}
+
+function normalizeBoolean(value, fallback) {
+  // v-model 或外部 JSON 可能把布尔值序列化成字符串，显式识别后再回退默认值。
+  if (typeof value === 'boolean') {
+    return value
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'true') {
+      return true
+    }
+
+    if (normalized === 'false') {
+      return false
+    }
+  }
+
+  return fallback
+}
+
+function normalizeFontFamilyValue(value, fallback) {
+  const text = String(value ?? '').trim()
+  // font-family 允许逗号和引号，但不允许 url()/expression() 等可执行或外链片段。
+  if (!text || text.length > MAX_FONT_FAMILY_LENGTH || hasUnsafeCssText(text)) {
+    return fallback
+  }
+
+  return text
+}
+
+function normalizeCssTextValue(value, fallback) {
+  const text = String(value ?? '').trim()
+  if (!text || text.length > 160 || hasUnsafeCssText(text) || /["']/.test(text)) {
+    return fallback
+  }
+
+  return text
+}
+
+function hasUnsafeCssText(value) {
+  return /[<>`]|(?:url\s*\(|expression\s*\(|javascript\s*:|data\s*:|@import|-moz-binding|behavior\s*:)/i.test(
+    String(value ?? ''),
+  )
 }
 
 // 通过多圈阴影模拟外描边效果。

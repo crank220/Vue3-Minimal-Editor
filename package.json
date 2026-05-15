@@ -18,22 +18,34 @@
   ],
   "scripts": {
     "dev": "vite --host",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test",
+    "test:all": "npm run lint && npm run test:unit && npm run test:e2e",
     "build": "vite build --config vite.lib.config.js",
     "build:demo": "vite build",
     "build:lib": "vite build --config vite.lib.config.js",
     "preview": "vite preview",
     "prepublishOnly": "npm run build:lib",
-    "publish": "npm publish --registry=http://192.168.90.222:66/"
+    "publish:internal": "npm publish --registry=https://192.168.90.222:66/"
   },
   "publishConfig": {
-    "registry": "http://192.168.90.222:66/"
+    "registry": "https://192.168.90.222:66/"
   },
   "peerDependencies": {
     "vue": "^3.5.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.60.0",
     "@vitejs/plugin-vue": "^5.2.4",
+    "eslint": "^10.3.0",
+    "eslint-plugin-vue": "^10.9.1",
+    "globals": "^17.6.0",
+    "jsdom": "^29.1.1",
     "vite": "^6.4.0",
+    "vitest": "^4.1.6",
     "vue": "^3.5.32"
   }
 }
